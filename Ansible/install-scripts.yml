@@ -1,0 +1,97 @@
+---
+- name: Install IRSEC repository scripts
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    linux_repo_scripts_dir: "{{ playbook_dir }}/linux-scripts"
+    windows_repo_scripts_dir: "{{ playbook_dir }}/windows-scripts"
+    linux_install_dir: "/opt/irsec/scripts"
+    windows_install_dir: "C:\\IRSEC\\scripts"
+    install_mode: "0755"
+
+  tasks:
+    - name: Validate Linux source directory on controller
+      when: ansible_os_family != "Windows"
+      block:
+        - name: Check Linux script source directory
+          ansible.builtin.stat:
+            path: "{{ linux_repo_scripts_dir }}"
+          register: linux_scripts_dir_stat
+          delegate_to: localhost
+          become: false
+
+        - name: Assert Linux script source directory exists
+          ansible.builtin.assert:
+            that:
+              - linux_scripts_dir_stat.stat.exists
+              - linux_scripts_dir_stat.stat.isdir
+            fail_msg: >-
+              Linux script source directory '{{ linux_repo_scripts_dir }}' was not found
+              on the controller. Add scripts there before running this playbook.
+
+        - name: Find Linux scripts in repository
+          ansible.builtin.find:
+            paths: "{{ linux_repo_scripts_dir }}"
+            file_type: file
+            recurse: true
+          register: linux_repo_scripts
+          delegate_to: localhost
+          become: false
+
+        - name: Ensure Linux install directory exists on target hosts
+          ansible.builtin.file:
+            path: "{{ linux_install_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: Install Linux scripts from repository
+          ansible.builtin.copy:
+            src: "{{ item.path }}"
+            dest: "{{ linux_install_dir }}/{{ item.path | basename }}"
+            mode: "{{ install_mode }}"
+          loop: "{{ linux_repo_scripts.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+
+    - name: Validate Windows source directory on controller
+      when: ansible_os_family == "Windows"
+      block:
+        - name: Check Windows script source directory
+          ansible.builtin.stat:
+            path: "{{ windows_repo_scripts_dir }}"
+          register: windows_scripts_dir_stat
+          delegate_to: localhost
+          become: false
+
+        - name: Assert Windows script source directory exists
+          ansible.builtin.assert:
+            that:
+              - windows_scripts_dir_stat.stat.exists
+              - windows_scripts_dir_stat.stat.isdir
+            fail_msg: >-
+              Windows script source directory '{{ windows_repo_scripts_dir }}' was not found
+              on the controller. Add scripts there before running this playbook.
+
+        - name: Find Windows scripts in repository
+          ansible.builtin.find:
+            paths: "{{ windows_repo_scripts_dir }}"
+            file_type: file
+            recurse: true
+          register: windows_repo_scripts
+          delegate_to: localhost
+          become: false
+
+        - name: Ensure Windows install directory exists on target hosts
+          ansible.windows.win_file:
+            path: "{{ windows_install_dir }}"
+            state: directory
+
+        - name: Install Windows scripts from repository
+          ansible.windows.win_copy:
+            src: "{{ item.path }}"
+            dest: "{{ windows_install_dir }}\\{{ item.path | basename }}"
+          loop: "{{ windows_repo_scripts.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
