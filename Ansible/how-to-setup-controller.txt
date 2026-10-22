@@ -1,0 +1,135 @@
+How to set up an Ansible controller on a LAN Linux box
+=======================================================
+
+This guide sets up one Linux machine as the Ansible controller, then uses it
+to deploy scripts from this repo to all Linux targets.
+
+Assumptions
+-----------
+- Controller OS: Linux
+- You can SSH from controller to each target box
+- Repo is available on GitHub (or copied locally)
+- Target hosts are Linux
+
+Step 1) Pick and prepare the controller host
+---------------------------------------------
+Pick one always-on Linux box on your LAN (example: 192.168.1.10).
+
+On the controller, update packages:
+
+Debian/Ubuntu:
+  sudo apt update
+  sudo apt -y upgrade
+
+RHEL/Rocky/Alma:
+  sudo dnf -y update
+
+Step 2) Install Ansible + Git on the controller
+------------------------------------------------
+Debian/Ubuntu:
+  sudo apt install -y ansible git openssh-client
+
+RHEL/Rocky/Alma:
+  sudo dnf install -y ansible git openssh-clients
+
+Verify install:
+  ansible --version
+  git --version
+
+Step 3) Set up SSH access from controller to targets
+-----------------------------------------------------
+Create an SSH key on the controller (press Enter through prompts):
+  ssh-keygen -t ed25519 -C "ansible-controller"
+
+Copy the key to each target user account (repeat per target):
+  ssh-copy-id <user>@<target-ip>
+
+Test SSH access (repeat per target):
+  ssh <user>@<target-ip> "hostname"
+
+Step 4) Get this repo onto the controller
+-----------------------------------------
+Clone:
+  git clone https://github.com/austinbenedicto/IRSEC.git
+  cd IRSEC
+
+Or if you already have it:
+  cd IRSEC
+  git pull
+
+Step 5) Confirm scripts exist in scripts_linux
+----------------------------------------------
+From repo root:
+  ls -la scripts_linux
+
+You should see scripts like:
+- watch.sh
+- reinstall.sh
+- network.sh
+- inventorier.sh
+- backup.sh
+
+Step 6) Create an inventory for your Linux targets
+---------------------------------------------------
+Create file:
+  nano Ansible/inventory.ini
+
+Example inventory:
+  [linux]
+  192.168.1.21 ansible_user=student
+  192.168.1.22 ansible_user=student
+  192.168.1.23 ansible_user=student
+
+  [linux:vars]
+  ansible_python_interpreter=/usr/bin/python3
+
+Save and exit.
+
+Step 7) Test Ansible connectivity
+---------------------------------
+From repo root:
+  ansible -i Ansible/inventory.ini linux -m ping
+
+Expected result: SUCCESS for each host.
+
+If you use sudo on targets:
+  ansible -i Ansible/inventory.ini linux -m ping -b
+
+Step 8) Run the playbook to deploy scripts
+------------------------------------------
+From repo root:
+  ansible-playbook -i Ansible/inventory.ini Ansible/install-scripts.yml
+
+What this does:
+- Uses scripts from scripts_linux/
+- Creates /opt/irsec/scripts on each Linux target
+- Copies scripts into /opt/irsec/scripts
+
+Step 9) Verify scripts on a target
+----------------------------------
+Check one host:
+  ssh <user>@<target-ip> "ls -la /opt/irsec/scripts"
+
+Step 10) Re-run after script updates
+------------------------------------
+Any time scripts change:
+  git pull
+  ansible-playbook -i Ansible/inventory.ini Ansible/install-scripts.yml
+
+Optional: Run only one host first for testing
+----------------------------------------------
+  ansible-playbook -i Ansible/inventory.ini Ansible/install-scripts.yml --limit 192.168.1.21
+
+Troubleshooting quick checks
+----------------------------
+1) SSH failure:
+   - Re-test: ssh <user>@<target-ip> "hostname"
+   - Confirm key in target ~/.ssh/authorized_keys
+
+2) Sudo/become failure:
+   - Add -K to prompt for become password:
+     ansible-playbook -i Ansible/inventory.ini Ansible/install-scripts.yml -K
+
+3) Python not found on target:
+   - Install python3 on target
+   - Keep ansible_python_interpreter=/usr/bin/python3 in inventory
