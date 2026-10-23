@@ -45,6 +45,9 @@ function OS{
 }
 
 function IP{
+Get-CimInstance -Class Win32_NetworkAdapterConfiguration -Filter IPEnabled=TRUE | Format-Table ServiceName, MACAddress, IPAddress, IPSubnet, DefaultIPGateway
+
+
 	$four = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias Wi-Fi        
 	$six =  Get-NetIPAddress -InterfaceAlias "Wi-Fi" -AddressFamily IPv6 -AddressState Preferred | Select-Object IPAddress, PrefixOrigin, SuffixOrigin, ValidLifetime    
 

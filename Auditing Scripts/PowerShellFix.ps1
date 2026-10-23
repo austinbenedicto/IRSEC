@@ -1,13 +1,27 @@
-$History = Get-History | ForEach-Object {$_; "`n"}
+$choice = (Read-Host -Prompt "Would you like the full history? y/n: ")
+
+try{
+	if($choice -eq 'y' -or $choice -eq 'Y'){
+		$history = Get-Content (Get-PSReadLineOption).HistorySavePath | Out-String -Stream
+	}
+	else{
+		$History = Get-History | ForEach-Object {$_; "`n"}
+	}
+}
+catch{
+	Write-Host "They removed the file ☹️"
+}
 
 Write-Host "----------------------------------------------------------------------------"
 Write-Host "|                         Red Team's CMD History!                          |"
 Write-Host "----------------------------------------------------------------------------"
 
 
-Write-Host -ForeGround "White" $History
+#Write-Host -ForeGround "White" $History
+$History | Out-String -Stream
 
-$Functions = Get-Command -CommandType Function | Select-Object Name 
+
+$Functions = Get-Command -CommandType Function | Select-Object -ExpandProperty Name
 
 $FunctionsCheck = "A:
 Add-BCDataCacheExtension
@@ -1034,14 +1048,16 @@ Write-PrinterNfcTag
 Write-VolumeCache
 X:
 Y:
-Z:"
+Z:
+"
+$FunctionsCheck = $FunctionsCheck -split '\r?\n'
 Write-Host "`n`n`n`n`n`n`n`n`n"
 Write-Host "----------------------------------------------------------------------------"
 Write-Host "|                        Functions Added/Modified                          |"
 Write-Host "----------------------------------------------------------------------------"
-
-foreach($function in $Functions){
-	if(($function[7..($function.length-2)]) -notin $Functions_Check){
+foreach($function in $Functions){	
+	if($function -notin $FunctionsCheck){
 		Write-Host -ForeGround "White" $function
 	}
 }
+
