@@ -11,3 +11,7 @@ How to add scripts for Ansible deployment
 
 Default install locations:
 - Linux targets: /opt/irsec/scripts
+
+Current post-install behavior on Linux targets:
+- Runs /opt/irsec/scripts/inventorier.sh once during playbook execution
+- Installs and starts watch.sh as systemd service: irsec-watch
