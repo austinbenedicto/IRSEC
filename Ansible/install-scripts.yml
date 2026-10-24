@@ -5,9 +5,11 @@
   gather_facts: true
 
   vars:
-    linux_repo_scripts_dir: "{{ playbook_dir }}/../scripts_linux"
+    linux_repo_scripts_dir: "{{ playbook_dir }}/scripts_linux"
     linux_install_dir: "/opt/irsec/scripts"
     install_mode: "0755"
+    watch_service_name: "irsec-watch"
+    watch_service_path: "/etc/systemd/system/{{ watch_service_name }}.service"
 
   tasks:
     - name: Skip non-Linux hosts
@@ -41,3 +43,55 @@
         src: "{{ linux_repo_scripts_dir }}/"
         dest: "{{ linux_install_dir }}/"
         mode: "{{ install_mode }}"
+      notify:
+        - Restart watcher service
+
+    - name: Require systemd for watcher management
+      ansible.builtin.assert:
+        that:
+          - ansible_service_mgr == "systemd"
+        fail_msg: >-
+          Watcher startup currently requires systemd. This host reports
+          ansible_service_mgr='{{ ansible_service_mgr }}'.
+
+    - name: Run inventorier baseline script
+      ansible.builtin.command:
+        cmd: "{{ linux_install_dir }}/inventorier.sh"
+
+    - name: Install watcher systemd unit
+      ansible.builtin.copy:
+        dest: "{{ watch_service_path }}"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=IRSEC watcher
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart={{ linux_install_dir }}/watch.sh
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart watcher service
+
+    - name: Ensure watcher service is enabled and running
+      ansible.builtin.systemd:
+        name: "{{ watch_service_name }}"
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart watcher service
+      ansible.builtin.systemd:
+        name: "{{ watch_service_name }}"
+        state: restarted

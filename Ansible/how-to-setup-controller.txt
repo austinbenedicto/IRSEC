@@ -104,11 +104,16 @@ What this does:
 - Uses scripts from scripts_linux/
 - Creates /opt/irsec/scripts on each Linux target
 - Copies scripts into /opt/irsec/scripts
+- Runs /opt/irsec/scripts/inventorier.sh once
+- Installs and starts watch.sh as systemd service: irsec-watch
 
 Step 9) Verify scripts on a target
 ----------------------------------
 Check one host:
   ssh <user>@<target-ip> "ls -la /opt/irsec/scripts"
+
+Check watcher service:
+  ssh <user>@<target-ip> "sudo systemctl status irsec-watch --no-pager"
 
 Step 10) Re-run after script updates
 ------------------------------------
