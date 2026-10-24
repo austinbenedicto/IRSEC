@@ -1,0 +1,13 @@
+How to add scripts for Ansible deployment
+=========================================
+
+1) Put Linux scripts in:
+   scripts_linux/
+
+2) Commit your new script files to the repo.
+
+3) Run the playbook:
+   ansible-playbook -i <inventory> Ansible/install-scripts.yml
+
+Default install locations:
+- Linux targets: /opt/irsec/scripts

@@ -1,0 +1,43 @@
+---
+- name: Install Linux scripts from scripts_linux
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    linux_repo_scripts_dir: "{{ playbook_dir }}/../scripts_linux"
+    linux_install_dir: "/opt/irsec/scripts"
+    install_mode: "0755"
+
+  tasks:
+    - name: Skip non-Linux hosts
+      ansible.builtin.meta: end_host
+      when: ansible_system != "Linux"
+
+    - name: Check Linux script source directory on controller
+      ansible.builtin.stat:
+        path: "{{ linux_repo_scripts_dir }}"
+      register: linux_scripts_dir_stat
+      delegate_to: localhost
+      become: false
+
+    - name: Assert Linux script source directory exists
+      ansible.builtin.assert:
+        that:
+          - linux_scripts_dir_stat.stat.exists
+          - linux_scripts_dir_stat.stat.isdir
+        fail_msg: >-
+          Linux script source directory '{{ linux_repo_scripts_dir }}' was not found
+          on the controller. Add scripts there before running this playbook.
+
+    - name: Ensure Linux install directory exists on target hosts
+      ansible.builtin.file:
+        path: "{{ linux_install_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Install Linux scripts from repository
+      ansible.builtin.copy:
+        src: "{{ linux_repo_scripts_dir }}/"
+        dest: "{{ linux_install_dir }}/"
+        mode: "{{ install_mode }}"
