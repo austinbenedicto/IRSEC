@@ -8,7 +8,17 @@ fi
 
 # Allowed user list
 user_list=(
-  "student"
+  "scrutineer"
+  "techdirector"
+  "crewchief"
+  "firecrew"
+  
+  "jackcrew"
+  "garagecrew"
+  "celebrity"
+  "pitlaner"
+  "reserve"
+  "gunners"
 )
 
 # reads each line in the /etc/passwd file and labels each variable
