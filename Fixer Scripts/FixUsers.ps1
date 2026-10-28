@@ -1,9 +1,11 @@
+#ADD DATADOG STUFF
+
 $EnabledUsers = Get-LocalUser | Where-Object {$_.Enabled -eq $true}
 
-$AdminList       = @("scrutineer", "techdirector", "crewchief", "firecrew")
-$UserList        = @("jackcrew", "garagecrew", "celebrity", "pitlaner", "reserve", "gunners")
-$DomainAdminList = @("principal", "sportingdir", "chiefeng", "strategist")
-$DomainUserList  = @("pitcrew", "mechanic", "analyst", "driver", "tireman", "fuelman")
+$AdminList       = @("scrutineer", "techdirector", "crewchief", "firecrew", "whiteteam")
+$UserList        = @("jackcrew", "garagecrew", "celebrity", "pitlaner", "reserve", "gunners", "whiteteam")
+$DomainAdminList = @("principal", "sportingdir", "chiefeng", "strategist", "whiteteam")
+$DomainUserList  = @("pitcrew", "mechanic", "analyst", "driver", "tireman", "fuelman", "whiteteam")
 
 $result = @()
 
