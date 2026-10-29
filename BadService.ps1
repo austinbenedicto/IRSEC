@@ -16,6 +16,19 @@ function Set-RegistryValue {
     New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $PropertyType -Force | Out-Null
 }
 
+# Helper function to safely disable optional features only if present on the OS
+function Disable-FeatureIfPresent {
+    param ([string]$FeatureName)
+    try {
+        $feat = Get-WindowsOptionalFeature -Online -FeatureName $FeatureName -ErrorAction SilentlyContinue
+        if ($feat -and $feat.State -eq "Enabled") {
+            Disable-WindowsOptionalFeature -Online -FeatureName $FeatureName -NoRestart -ErrorAction SilentlyContinue | Out-Null
+        }
+    } catch {
+        # Gracefully handle OS versions where the feature name does not exist
+    }
+}
+
 # ------------------------------------------------------------------
 # 1. Clean IFEO Debugger Hijacks (Sticky Keys / Accessibility Backdoors)
 # ------------------------------------------------------------------
@@ -63,13 +76,11 @@ $classicLogs = @("Security", "System", "Application")
 foreach ($log in $classicLogs) {
     try {
         Limit-EventLog -LogName $log -MaximumSize 512MB -OverflowAction OverwriteAsNeeded -ErrorAction SilentlyContinue
-    } catch {
-        # Continue if log limit fails
-    }
+    } catch {}
 }
 
 # Expand PowerShell ETW Operational log via wevtutil
-wevtutil.exe sl "Microsoft-Windows-PowerShell/Operational" /ms:536870912 /e:true
+wevtutil.exe sl "Microsoft-Windows-PowerShell/Operational" /ms:536870912 /e:true 2>$null
 
 # Enable ScriptBlock Logging and Command Line Auditing
 Set-RegistryValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -Name "EnableScriptBlockLogging" -Value 1
@@ -80,9 +91,9 @@ Write-Host "    [OK] Event logs expanded to 512MB and execution auditing enabled
 # 5. Disable Legacy Protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2)
 # ------------------------------------------------------------------
 Write-Host "[+] Disabling Legacy Network Protocols and PSv2 Engine..." -ForegroundColor Yellow
-Disable-WindowsOptionalFeature -Online -FeatureName "SMB1Protocol" -NoRestart -ErrorAction SilentlyContinue | Out-Null
-Disable-WindowsOptionalFeature -Online -FeatureName "MicrosoftWindowsPowerShellV2" -NoRestart -ErrorAction SilentlyContinue | Out-Null
-Disable-WindowsOptionalFeature -Online -FeatureName "MicrosoftWindowsPowerShellV2Root" -NoRestart -ErrorAction SilentlyContinue | Out-Null
+Disable-FeatureIfPresent -FeatureName "SMB1Protocol"
+Disable-FeatureIfPresent -FeatureName "MicrosoftWindowsPowerShellV2"
+Disable-FeatureIfPresent -FeatureName "MicrosoftWindowsPowerShellV2Root"
 
 Set-RegistryValue -Path "HKLM:\Software\Policies\Microsoft\Windows NT\DNSClient" -Name "EnableMulticast" -Value 0
 Set-RegistryValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" -Name "EnableMDNS" -Value 0
@@ -91,7 +102,7 @@ $adapters = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $
 foreach ($adapter in $adapters) {
     $adapter.SetTcpipNetbios(2) | Out-Null
 }
-Write-Host "    [OK] Legacy protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2) disabled." -ForegroundColor Green
+Write-Host "    [OK] Legacy protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2) checked and disabled." -ForegroundColor Green
 
 # ------------------------------------------------------------------
 # 6. Credential and Memory Protection (WDigest, LSA, LM Hash)
