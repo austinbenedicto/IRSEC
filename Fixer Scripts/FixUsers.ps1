@@ -1,4 +1,4 @@
-#ADD DATADOG STUFF
+
 
 $EnabledUsers = Get-LocalUser | Where-Object {$_.Enabled -eq $true}
 
@@ -19,7 +19,7 @@ foreach ($group in $groups) {
 				$memberEnabled = (Get-LocalUser -Name $member).Enabled
 				if($memberEnabled){
 					if($AdminList -notcontains $member -and $UserList -notcontains $member){
-						Write-Host Disable $member"?"
+						Write-Host Disable $member"? If the member contains `'dd`', DO NOT REMOVE, that is a DataDog Account"
 						$input = Read-Host
 						if($input -eq "y" -or $input -eq "Y"){
 							Disable-LocalUser -Name $member	
