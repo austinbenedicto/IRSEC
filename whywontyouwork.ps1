@@ -11,7 +11,7 @@ $DataDogIPs = @("34.149.66.128/26", "34.160.125.158/32", "35.190.51.116/32", "34
 
 
 $Port = @(514, 53, 88, 135, 389, 445, 636, 3268, 3269, 9389) + $DataDogPorts
-$IPV4 = @("10.5.1.1", "10.5.1.254", "192.168.5.4", "192.168.5.4") + $DataDogIPs + $MyIp + $ScoreCheck
+$IPV4 = @("10.5.1.1", "10.5.1.254", "192.168.5.4", "192.168.5.4") + $DataDogIPs + $MyIp + $ScoreCheck + $Sadness
 
 #LAN, Server2025, AD/DNS
 if($env:COMPUTERNAME -eq "pitwall"){
