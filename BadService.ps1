@@ -19,7 +19,7 @@ function Set-RegistryValue {
 # ------------------------------------------------------------------
 # 1. Clean IFEO Debugger Hijacks (Sticky Keys / Accessibility Backdoors)
 # ------------------------------------------------------------------
-Write-Host "[+] Auditing & Clearing Accessibility IFEO Persistence Backdoors..." -ForegroundColor Yellow
+Write-Host "[+] Auditing and Clearing Accessibility IFEO Persistence Backdoors..." -ForegroundColor Yellow
 $accessibilityApps = @("sethc.exe", "utilman.exe", "osk.exe", "magnify.exe", "narrator.exe", "displayswitch.exe", "atbroker.exe")
 foreach ($app in $accessibilityApps) {
     $ifeoPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$app"
@@ -56,9 +56,9 @@ try {
 }
 
 # ------------------------------------------------------------------
-# 4. Expand Event Log Sizes & Enable Auditing (30% IR Report Evidence)
+# 4. Expand Event Log Sizes and Enable Auditing (30% IR Report Evidence)
 # ------------------------------------------------------------------
-Write-Host "[+] Expanding Event Logs to 512MB & Activating Auditing..." -ForegroundColor Yellow
+Write-Host "[+] Expanding Event Logs to 512MB and Activating Auditing..." -ForegroundColor Yellow
 $classicLogs = @("Security", "System", "Application")
 foreach ($log in $classicLogs) {
     try {
@@ -67,17 +67,17 @@ foreach ($log in $classicLogs) {
 }
 
 # Expand PowerShell ETW Operational log via wevtutil
-wevtutil sl "Microsoft-Windows-PowerShell/Operational" /ms:536870912 /e:true 2>$null
+Start-Process -FilePath "wevtutil.exe" -ArgumentList "sl `\"Microsoft-Windows-PowerShell/Operational`\" /ms:536870912 /e:true" -NoNewWindow -Wait -ErrorAction SilentlyContinue
 
-# Enable ScriptBlock Logging & Command Line Auditing
+# Enable ScriptBlock Logging and Command Line Auditing
 Set-RegistryValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -Name "EnableScriptBlockLogging" -Value 1
 Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit" -Name "ProcessCreationIncludeCmdLine_Enabled" -Value 1
-Write-Host "    [✓] Event logs expanded to 512MB & execution auditing enabled." -ForegroundColor Green
+Write-Host "    [✓] Event logs expanded to 512MB and execution auditing enabled." -ForegroundColor Green
 
 # ------------------------------------------------------------------
 # 5. Disable Legacy Protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2)
 # ------------------------------------------------------------------
-Write-Host "[+] Disabling Legacy Network Protocols & PSv2 Engine..." -ForegroundColor Yellow
+Write-Host "[+] Disabling Legacy Network Protocols and PSv2 Engine..." -ForegroundColor Yellow
 Disable-WindowsOptionalFeature -Online -FeatureName "SMB1Protocol" -NoRestart -ErrorAction SilentlyContinue | Out-Null
 Disable-WindowsOptionalFeature -Online -FeatureName "MicrosoftWindowsPowerShellV2" -NoRestart -ErrorAction SilentlyContinue | Out-Null
 Disable-WindowsOptionalFeature -Online -FeatureName "MicrosoftWindowsPowerShellV2Root" -NoRestart -ErrorAction SilentlyContinue | Out-Null
@@ -92,9 +92,9 @@ foreach ($adapter in $adapters) {
 Write-Host "    [✓] Legacy protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2) disabled." -ForegroundColor Green
 
 # ------------------------------------------------------------------
-# 6. Credential & Memory Protection (WDigest, LSA, LM Hash)
+# 6. Credential and Memory Protection (WDigest, LSA, LM Hash)
 # ------------------------------------------------------------------
-Write-Host "[+] Enforcing Memory & Credential Protections..." -ForegroundColor Yellow
+Write-Host "[+] Enforcing Memory and Credential Protections..." -ForegroundColor Yellow
 Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "LmCompatibilityLevel" -Value 5
 Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "NoLMHash" -Value 1
 Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "RunAsPPL" -Value 1
@@ -124,9 +124,9 @@ foreach ($svc in $servicesToDisable) {
 Write-Host "    [✓] RemoteRegistry, Spooler, SSDP, UPnP disabled." -ForegroundColor Green
 
 # ------------------------------------------------------------------
-# 9. Schannel TLS Protocol Configuration & NLA for RDP
+# 9. Schannel TLS Protocol Configuration and NLA for RDP
 # ------------------------------------------------------------------
-Write-Host "[+] Enforcing TLS 1.2/1.3 & RDP NLA..." -ForegroundColor Yellow
+Write-Host "[+] Enforcing TLS 1.2/1.3 and RDP NLA..." -ForegroundColor Yellow
 $legacyProtocols = @("SSL 2.0", "SSL 3.0", "TLS 1.0", "TLS 1.1")
 foreach ($proto in $legacyProtocols) {
     $basePath = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\$proto"
@@ -147,9 +147,9 @@ Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\
 Write-Host "    [✓] Legacy SSL/TLS disabled; TLS 1.2/1.3 and RDP NLA enforced." -ForegroundColor Green
 
 # ------------------------------------------------------------------
-# 10. WinRM & SMB Service Guarantee (Scoring Protection)
+# 10. WinRM and SMB Service Guarantee (Scoring Protection)
 # ------------------------------------------------------------------
-Write-Host "[+] Ensuring WinRM & SMB Services remain active for scoring..." -ForegroundColor Yellow
+Write-Host "[+] Ensuring WinRM and SMB Services remain active for scoring..." -ForegroundColor Yellow
 Set-Service -Name "WinRM" -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service -Name "WinRM" -ErrorAction SilentlyContinue
 
