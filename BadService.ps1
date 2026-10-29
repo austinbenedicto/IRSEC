@@ -16,19 +16,6 @@ function Set-RegistryValue {
     New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $PropertyType -Force | Out-Null
 }
 
-# Helper function to safely disable optional features only if present on the OS
-function Disable-FeatureIfPresent {
-    param ([string]$FeatureName)
-    try {
-        $feat = Get-WindowsOptionalFeature -Online -FeatureName $FeatureName -ErrorAction SilentlyContinue
-        if ($feat -and $feat.State -eq "Enabled") {
-            Disable-WindowsOptionalFeature -Online -FeatureName $FeatureName -NoRestart -ErrorAction SilentlyContinue | Out-Null
-        }
-    } catch {
-        # Gracefully handle OS versions where the feature name does not exist
-    }
-}
-
 # ------------------------------------------------------------------
 # 1. Clean IFEO Debugger Hijacks (Sticky Keys / Accessibility Backdoors)
 # ------------------------------------------------------------------
@@ -80,7 +67,9 @@ foreach ($log in $classicLogs) {
 }
 
 # Expand PowerShell ETW Operational log via wevtutil
-wevtutil.exe sl "Microsoft-Windows-PowerShell/Operational" /ms:536870912 /e:true 2>$null
+try {
+    wevtutil.exe sl "Microsoft-Windows-PowerShell/Operational" /ms:536870912 /e:true 2>$null
+} catch {}
 
 # Enable ScriptBlock Logging and Command Line Auditing
 Set-RegistryValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -Name "EnableScriptBlockLogging" -Value 1
@@ -91,18 +80,39 @@ Write-Host "    [OK] Event logs expanded to 512MB and execution auditing enabled
 # 5. Disable Legacy Protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2)
 # ------------------------------------------------------------------
 Write-Host "[+] Disabling Legacy Network Protocols and PSv2 Engine..." -ForegroundColor Yellow
-Disable-FeatureIfPresent -FeatureName "SMB1Protocol"
-Disable-FeatureIfPresent -FeatureName "MicrosoftWindowsPowerShellV2"
-Disable-FeatureIfPresent -FeatureName "MicrosoftWindowsPowerShellV2Root"
 
+# Disable SMBv1 & PSv2 via native DISM binary (prevents PowerShell cmdlet feature errors)
+try {
+    dism.exe /online /disable-feature /featurename:SMB1Protocol /norestart 2>$null | Out-Null
+    dism.exe /online /disable-feature /featurename:MicrosoftWindowsPowerShellV2 /norestart 2>$null | Out-Null
+    dism.exe /online /disable-feature /featurename:MicrosoftWindowsPowerShellV2Root /norestart 2>$null | Out-Null
+} catch {}
+
+# Disable LLMNR and mDNS via Registry
 Set-RegistryValue -Path "HKLM:\Software\Policies\Microsoft\Windows NT\DNSClient" -Name "EnableMulticast" -Value 0
 Set-RegistryValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" -Name "EnableMDNS" -Value 0
 
-$adapters = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled }
-foreach ($adapter in $adapters) {
-    $adapter.SetTcpipNetbios(2) | Out-Null
-}
-Write-Host "    [OK] Legacy protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2) checked and disabled." -ForegroundColor Green
+# Disable NetBIOS via CIM/WMI
+try {
+    $adapters = Get-CimInstance Win32_NetworkAdapterConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPEnabled }
+    foreach ($adapter in $adapters) {
+        try {
+            Invoke-CimMethod -InputObject $adapter -MethodName "SetTcpipNetbios" -Arguments @{TcpipNetbiosOptions = 2} -ErrorAction SilentlyContinue | Out-Null
+        } catch {}
+    }
+} catch {}
+
+# Disable NetBIOS via Registry across all interface keys (Direct fail-safe)
+try {
+    $netBtPath = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces"
+    if (Test-Path -Path $netBtPath) {
+        Get-ChildItem -Path $netBtPath -ErrorAction SilentlyContinue | ForEach-Object {
+            Set-ItemProperty -Path $_.PSPath -Name "NetbiosOptions" -Value 2 -Type DWord -ErrorAction SilentlyContinue
+        }
+    }
+} catch {}
+
+Write-Host "    [OK] Legacy protocols (SMBv1, LLMNR, mDNS, NetBIOS, PSv2) disabled." -ForegroundColor Green
 
 # ------------------------------------------------------------------
 # 6. Credential and Memory Protection (WDigest, LSA, LM Hash)
@@ -118,14 +128,16 @@ Write-Host "    [OK] LmCompatibilityLevel=5, NoLMHash=1, RunAsPPL=1, WDigest cle
 # 7. Disable Built-In Guest Account (Rule 6 Safeguard for 'whiteteam')
 # ------------------------------------------------------------------
 Write-Host "[+] Checking Guest Account status..." -ForegroundColor Yellow
-$guestAccount = Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True AND SID LIKE '%-501'"
-if ($guestAccount) {
-    if ($guestAccount.Name -ne "whiteteam") {
-        Disable-LocalUser -SID $guestAccount.SID -ErrorAction SilentlyContinue
-        net user "$($guestAccount.Name)" /active:no | Out-Null
-        Write-Host "    [OK] Guest account disabled." -ForegroundColor Green
+try {
+    $guestAccount = Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True AND SID LIKE '%-501'" -ErrorAction SilentlyContinue
+    if ($guestAccount) {
+        if ($guestAccount.Name -ne "whiteteam") {
+            Disable-LocalUser -SID $guestAccount.SID -ErrorAction SilentlyContinue
+            net user "$($guestAccount.Name)" /active:no 2>$null | Out-Null
+            Write-Host "    [OK] Guest account disabled." -ForegroundColor Green
+        }
     }
-}
+} catch {}
 
 # ------------------------------------------------------------------
 # 8. Disable Non-Essential Vulnerable Services
@@ -133,8 +145,10 @@ if ($guestAccount) {
 Write-Host "[+] Disabling Non-Essential Services..." -ForegroundColor Yellow
 $servicesToDisable = @("RemoteRegistry", "Spooler", "SSDPSRV", "upnphost")
 foreach ($svc in $servicesToDisable) {
-    Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-    Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+    try {
+        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+    } catch {}
 }
 Write-Host "    [OK] RemoteRegistry, Spooler, SSDP, UPnP disabled." -ForegroundColor Green
 
@@ -165,11 +179,13 @@ Write-Host "    [OK] Legacy SSL/TLS disabled; TLS 1.2/1.3 and RDP NLA enforced."
 # 10. WinRM and SMB Service Guarantee (Scoring Protection)
 # ------------------------------------------------------------------
 Write-Host "[+] Ensuring WinRM and SMB Services remain active for scoring..." -ForegroundColor Yellow
-Set-Service -Name "WinRM" -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service -Name "WinRM" -ErrorAction SilentlyContinue
+try {
+    Set-Service -Name "WinRM" -StartupType Automatic -ErrorAction SilentlyContinue
+    Start-Service -Name "WinRM" -ErrorAction SilentlyContinue
 
-Set-Service -Name "LanmanServer" -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service -Name "LanmanServer" -ErrorAction SilentlyContinue
+    Set-Service -Name "LanmanServer" -StartupType Automatic -ErrorAction SilentlyContinue
+    Start-Service -Name "LanmanServer" -ErrorAction SilentlyContinue
+} catch {}
 Write-Host "    [OK] WinRM and SMB services configured and running." -ForegroundColor Green
 
 # ------------------------------------------------------------------
