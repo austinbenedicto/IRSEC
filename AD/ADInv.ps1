@@ -1,8 +1,13 @@
+That error occurs when PowerShell encounters a **Here-String** (`@" ... "@`) with leading spaces or indentation (which breaks PowerShell's parser) or when copying/pasting code directly into a terminal where `$PSScriptRoot` is empty, causing `$outDir` to break.
+
+The script below removes all fragile here-strings and adds automatic fallback path handling so it runs cleanly whether executed as a script file or pasted directly into a PowerShell window.
+
+```powershell
 <#
 .SYNOPSIS
     Active Directory & DNS IRSEC Security Audit, Persistence Detection, and Inventory Script.
 .DESCRIPTION
-    Performs baseline inventory, scans for common AD/DNS security vulnerabilities,
+    Performs baseline inventory, scans for AD/DNS security vulnerabilities,
     detects Red Team persistence mechanisms (Shadow Credentials, RBCD, GPO backdoors),
     and generates CSV reports, an HTML summary, and an automated remediation script.
 #>
@@ -10,15 +15,27 @@
 [CmdletBinding()]
 param(
     [int]$StaleDays = 30,
-    [string]$OutputRoot = $PSScriptRoot
+    [string]$OutputRoot = ""
 )
 
 #Requires -RunAsAdministrator
 
 # ----------------------------------------------------------------------
-# 0. Environment Setup & Module Checks
+# 0. Output Directory & Environment Setup
 # ----------------------------------------------------------------------
-Write-Host "[+] Verifying required modules..." -ForegroundColor Cyan
+Write-Host "[+] Verifying environment and output directory..." -ForegroundColor Cyan
+
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+    if ($PSScriptRoot) {
+        $OutputRoot = $PSScriptRoot
+    } else {
+        $OutputRoot = (Get-Location).Path
+    }
+}
+
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$outDir = Join-Path -Path $OutputRoot -ChildPath "AD_IRSEC_Audit_$stamp"
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
     Write-Host "Active Directory module not found. Installing RSAT..." -ForegroundColor Yellow
@@ -36,7 +53,7 @@ if (-not (Get-Module -ListAvailable -Name DnsServer)) {
 Import-Module ActiveDirectory -ErrorAction Stop
 
 # ----------------------------------------------------------------------
-# 1. Domain Discovery & Output Directory Setup
+# 1. Domain Discovery
 # ----------------------------------------------------------------------
 try {
     $domain = Get-ADDomain -ErrorAction Stop
@@ -46,10 +63,6 @@ try {
     $domain = Get-ADDomain -Server $dcTarget -ErrorAction Stop
 }
 
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$outDir = Join-Path -Path $OutputRoot -ChildPath "AD_IRSEC_Audit_$stamp"
-New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-
 $findings = [System.Collections.Generic.List[object]]::new()
 $remediationCmds = [System.Collections.Generic.List[string]]::new()
 $remediationCmds.Add("# Auto-generated IRSEC Remediation Script - Review commands before running!")
@@ -58,10 +71,10 @@ $remediationCmds.Add("")
 
 $cutoff = (Get-Date).AddDays(-$StaleDays)
 
-Write-Host "[+] Collecting inventory and performing security audit for domain: $($domain.DNSRoot)" -ForegroundColor Cyan
+Write-Host "[+] Auditing Active Directory domain: $($domain.DNSRoot)" -ForegroundColor Cyan
 
 # ----------------------------------------------------------------------
-# 2. Domain Controllers & Core Infrastructure
+# 2. Domain Controllers
 # ----------------------------------------------------------------------
 Write-Host " -> Auditing Domain Controllers..." -ForegroundColor Gray
 try {
@@ -69,23 +82,23 @@ try {
         Select-Object HostName, IPv4Address, Site, IsGlobalCatalog,
             IsReadOnly, OperatingSystem, OperationMasterRoles
 
-    $dcs | Export-Csv "$outDir\DomainControllers.csv" -NoTypeInformation
+    $dcs | Export-Csv -Path "$outDir\DomainControllers.csv" -NoTypeInformation
 } catch {
     Write-Warning "Failed to query Domain Controllers: $_"
 }
 
 # ----------------------------------------------------------------------
-# 3. User Accounts & Credential Security
+# 3. User Accounts & Persistence Checks
 # ----------------------------------------------------------------------
 Write-Host " -> Auditing User Accounts..." -ForegroundColor Gray
 $users = Get-ADUser -Filter * -Properties Enabled, LastLogonDate,
     PasswordLastSet, PasswordNeverExpires, PasswordNotRequired, DONT_REQ_PREAUTH,
-    AdminCount, ServicePrincipalNames, whenCreated, "msDS-KeyCredentialLink" |
+    AdminCount, ServicePrincipalNames, whenCreated, msDS-KeyCredentialLink |
     Select-Object Name, SamAccountName, Enabled, LastLogonDate,
         PasswordLastSet, PasswordNeverExpires, PasswordNotRequired, DONT_REQ_PREAUTH,
-        AdminCount, ServicePrincipalNames, whenCreated, DistinguishedName, "msDS-KeyCredentialLink"
+        AdminCount, ServicePrincipalNames, whenCreated, DistinguishedName, msDS-KeyCredentialLink
 
-$users | Export-Csv "$outDir\Users.csv" -NoTypeInformation
+$users | Export-Csv -Path "$outDir\Users.csv" -NoTypeInformation
 
 foreach ($u in $users) {
     if ($u.Enabled -and $u.PasswordNotRequired) {
@@ -138,7 +151,7 @@ foreach ($u in $users) {
     }
 
     # Shadow Credentials Check (pyWhisker / Whisker Persistence)
-    if ($u."msDS-KeyCredentialLink") {
+    if ($u.'msDS-KeyCredentialLink') {
         $findings.Add([pscustomobject]@{
             Severity = "High"
             Object   = $u.SamAccountName
@@ -168,12 +181,12 @@ try {
 Write-Host " -> Auditing Computer Objects & Delegation..." -ForegroundColor Gray
 $computers = Get-ADComputer -Filter * -Properties Enabled,
     LastLogonDate, OperatingSystem, OperatingSystemVersion,
-    PasswordLastSet, TrustedForDelegation, "msDS-AllowedToActOnBehalfOfOtherIdentity" |
+    PasswordLastSet, TrustedForDelegation, msDS-AllowedToActOnBehalfOfOtherIdentity |
     Select-Object Name, Enabled, LastLogonDate, OperatingSystem,
         OperatingSystemVersion, PasswordLastSet, TrustedForDelegation,
-        "msDS-AllowedToActOnBehalfOfOtherIdentity", DistinguishedName
+        msDS-AllowedToActOnBehalfOfOtherIdentity, DistinguishedName
 
-$computers | Export-Csv "$outDir\Computers.csv" -NoTypeInformation
+$computers | Export-Csv -Path "$outDir\Computers.csv" -NoTypeInformation
 
 foreach ($c in $computers) {
     if ($c.Enabled -and $c.LastLogonDate -and $c.LastLogonDate -lt $cutoff) {
@@ -196,7 +209,7 @@ foreach ($c in $computers) {
     }
 
     # RBCD Check (Resource-Based Constrained Delegation Persistence)
-    if ($c."msDS-AllowedToActOnBehalfOfOtherIdentity") {
+    if ($c.'msDS-AllowedToActOnBehalfOfOtherIdentity') {
         $findings.Add([pscustomobject]@{
             Severity = "High"
             Object   = $c.Name
@@ -208,15 +221,15 @@ foreach ($c in $computers) {
 }
 
 # ----------------------------------------------------------------------
-# 5. Groups & Privileged Access Management
+# 5. Groups & Privileged Members
 # ----------------------------------------------------------------------
-Write-Host " -> Auditing Groups and Privileged Members..." -ForegroundColor Gray
+Write-Host " -> Auditing Groups and Privileged Access..." -ForegroundColor Gray
 $groups = Get-ADGroup -Filter * -Properties GroupCategory,
     GroupScope, AdminCount, whenCreated |
     Select-Object Name, SamAccountName, SID, GroupCategory,
         GroupScope, AdminCount, whenCreated, DistinguishedName
 
-$groups | Export-Csv "$outDir\Groups.csv" -NoTypeInformation
+$groups | Export-Csv -Path "$outDir\Groups.csv" -NoTypeInformation
 
 $privilegedGroupNames = @("Domain Admins", "Enterprise Admins", "Schema Admins", "Administrators")
 $privileged = foreach ($name in $privilegedGroupNames) {
@@ -229,12 +242,12 @@ $privileged = foreach ($name in $privilegedGroupNames) {
     }
 }
 
-$privileged | Export-Csv "$outDir\PrivilegedMembers.csv" -NoTypeInformation
+$privileged | Export-Csv -Path "$outDir\PrivilegedMembers.csv" -NoTypeInformation
 
 # ----------------------------------------------------------------------
-# 6. Group Policy & Domain Trusts Audit
+# 6. Group Policy & Trusts Audit
 # ----------------------------------------------------------------------
-Write-Host " -> Auditing Group Policy Objects & Trusts..." -ForegroundColor Gray
+Write-Host " -> Auditing Group Policy Objects & Domain Trusts..." -ForegroundColor Gray
 if (Get-Module -ListAvailable -Name GroupPolicy) {
     try {
         Import-Module GroupPolicy -ErrorAction SilentlyContinue
@@ -243,7 +256,7 @@ if (Get-Module -ListAvailable -Name GroupPolicy) {
             $findings.Add([pscustomobject]@{
                 Severity = "Medium"
                 Object   = $gpo.DisplayName
-                Issue    = "GPO Modified in Last 24 Hours (Review for Malicious Backdoors)"
+                Issue    = "GPO Modified in Last 24 Hours (Review for Backdoors)"
                 Evidence = "Modified: $($gpo.ModificationTime) | Owner: $($gpo.Owner)"
             })
         }
@@ -255,7 +268,7 @@ if (Get-Module -ListAvailable -Name GroupPolicy) {
 try {
     $domainTrusts = Get-ADTrust -Filter * -ErrorAction SilentlyContinue
     if ($domainTrusts) {
-        $domainTrusts | Export-Csv "$outDir\DomainTrusts.csv" -NoTypeInformation
+        $domainTrusts | Export-Csv -Path "$outDir\DomainTrusts.csv" -NoTypeInformation
         foreach ($t in $domainTrusts) {
             $findings.Add([pscustomobject]@{
                 Severity = "Medium"
@@ -268,7 +281,7 @@ try {
 } catch {}
 
 # ----------------------------------------------------------------------
-# 7. Password Policies
+# 7. Password Policy Audit
 # ----------------------------------------------------------------------
 Write-Host " -> Auditing Password Policies..." -ForegroundColor Gray
 try {
@@ -276,7 +289,7 @@ try {
         Select-Object ComplexityEnabled, MinPasswordLength,
             PasswordHistoryCount, MaxPasswordAge, LockoutThreshold,
             LockoutDuration, LockoutObservationWindow |
-        Export-Csv "$outDir\PasswordPolicy.csv" -NoTypeInformation
+        Export-Csv -Path "$outDir\PasswordPolicy.csv" -NoTypeInformation
 } catch {
     Write-Warning "Default Password policy query failed: $_"
 }
@@ -284,7 +297,7 @@ try {
 try {
     $fgpp = Get-ADFineGrainedPasswordPolicy -Filter * -ErrorAction SilentlyContinue
     if ($fgpp) {
-        $fgpp | Export-Csv "$outDir\FineGrainedPasswordPolicies.csv" -NoTypeInformation
+        $fgpp | Export-Csv -Path "$outDir\FineGrainedPasswordPolicies.csv" -NoTypeInformation
     }
 } catch {}
 
@@ -301,7 +314,7 @@ try {
 }
 
 if ($dnsZones) {
-    $dnsZones | Export-Csv "$outDir\DNS_Zones.csv" -NoTypeInformation
+    $dnsZones | Export-Csv -Path "$outDir\DNS_Zones.csv" -NoTypeInformation
 
     foreach ($zone in $dnsZones) {
         if ($zone.DynamicUpdate -eq "NonsecureAndSecure" -or $zone.DynamicUpdate -eq 1) {
@@ -343,7 +356,7 @@ if ($dnsZones) {
     }
 
     if ($dnsRecords) {
-        $dnsRecords | Export-Csv "$outDir\DNS_ResourceRecords.csv" -NoTypeInformation
+        $dnsRecords | Export-Csv -Path "$outDir\DNS_ResourceRecords.csv" -NoTypeInformation
 
         foreach ($rec in $dnsRecords) {
             $shortHost = $rec.HostName.Split('.')[0].ToLower()
@@ -393,20 +406,20 @@ try {
 } catch {}
 
 # ----------------------------------------------------------------------
-# 9. Output Generation (CSV, Remediation Script & HTML Dashboard)
+# 9. Report Export & HTML Generation
 # ----------------------------------------------------------------------
 Write-Host "[+] Exporting findings and generating reports..." -ForegroundColor Cyan
 
-$findings | Export-Csv "$outDir\Findings.csv" -NoTypeInformation
+$findings | Export-Csv -Path "$outDir\Findings.csv" -NoTypeInformation
 
-$remediationPath = Join-Path $outDir "Remediate_Findings.ps1"
-$remediationCmds | Set-Content $remediationPath -Encoding UTF8
+$remediationPath = Join-Path -Path $outDir -ChildPath "Remediate_Findings.ps1"
+$remediationCmds | Set-Content -Path $remediationPath -Encoding UTF8
 
-$high = @($findings | Where-Object Severity -eq "High").Count
-$medium = @($findings | Where-Object Severity -eq "Medium").Count
-$low = @($findings | Where-Object Severity -eq "Low").Count
+$highCount = @($findings | Where-Object Severity -eq "High").Count
+$mediumCount = @($findings | Where-Object Severity -eq "Medium").Count
+$lowCount = @($findings | Where-Object Severity -eq "Low").Count
 
-$rows = foreach ($f in $findings) {
+$tableRows = foreach ($f in $findings) {
     $severity = [System.Net.WebUtility]::HtmlEncode($f.Severity)
     $obj      = [System.Net.WebUtility]::HtmlEncode($f.Object)
     $issue    = [System.Net.WebUtility]::HtmlEncode($f.Issue)
@@ -421,53 +434,64 @@ $rows = foreach ($f in $findings) {
     "<tr style='background-color: $color;'><td><b>$severity</b></td><td>$obj</td><td>$issue</td><td>$evidence</td></tr>"
 }
 
-$html = @"
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>IRSEC AD & DNS Audit Dashboard</title>
-<style>
-body { font-family: Segoe UI, Tahoma, Geneva, Verdana, sans-serif; margin: 30px; background-color: #f4f6f9; color: #333; }
-h1 { color: #003366; }
-.card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
-table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-th { background: #003366; color: white; }
-.badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-.high { background: #dc3545; color: white; }
-.medium { background: #ffc107; color: #212529; }
-.low { background: #17a2b8; color: white; }
-</style>
-</head>
-<body>
-<div class="card">
-    <h1>Active Directory IRSEC Audit Dashboard</h1>
-    <p><b>Domain:</b> $($domain.DNSRoot) | <b>Generated:</b> $(Get-Date)</p>
-    <p><b>Inventory Summary:</b> Users: $(@($users).Count) | Computers: $(@($computers).Count) | Groups: $(@($groups).Count) | DNS Zones: $(@($dnsZones).Count)</p>
-    <p><b>Severity Triage:</b> 
-        <span class="badge high">High: $high</span> 
-        <span class="badge medium">Medium: $medium</span> 
-        <span class="badge low">Low: $low</span>
-    </p>
-</div>
+$joinedRows = $tableRows -join "`n"
+$domainRoot = $domain.DNSRoot
+$genTime = Get-Date
+$uCount = @($users).Count
+$cCount = @($computers).Count
+$gCount = @($groups).Count
+$zCount = @($dnsZones).Count
 
-<div class="card">
-    <h2>Detected Security Findings & Persistence Leads</h2>
-    <p><i>Review accounts and dependencies before taking automated remediation actions.</i></p>
-    <table>
-    <tr><th>Severity</th><th>Object / System</th><th>Issue Description</th><th>Evidence / Configuration</th></tr>
-    $($rows -join "`n")
-    </table>
-</div>
-</body>
-</html>
-"@
+$htmlLines = @(
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    "<meta charset='utf-8'>",
+    "<title>IRSEC AD & DNS Audit Dashboard</title>",
+    "<style>",
+    "body { font-family: Segoe UI, Tahoma, Geneva, Verdana, sans-serif; margin: 30px; background-color: #f4f6f9; color: #333; }",
+    "h1 { color: #003366; }",
+    ".card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }",
+    "table { border-collapse: collapse; width: 100%; margin-top: 10px; }",
+    "th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }",
+    "th { background: #003366; color: white; }",
+    ".badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; }",
+    ".high { background: #dc3545; color: white; }",
+    ".medium { background: #ffc107; color: #212529; }",
+    ".low { background: #17a2b8; color: white; }",
+    "</style>",
+    "</head>",
+    "<body>",
+    "<div class='card'>",
+    "    <h1>Active Directory IRSEC Audit Dashboard</h1>",
+    "    <p><b>Domain:</b> $domainRoot | <b>Generated:</b> $genTime</p>",
+    "    <p><b>Inventory Summary:</b> Users: $uCount | Computers: $cCount | Groups: $gCount | DNS Zones: $zCount</p>",
+    "    <p><b>Severity Triage:</b>",
+    "        <span class='badge high'>High: $highCount</span>",
+    "        <span class='badge medium'>Medium: $mediumCount</span>",
+    "        <span class='badge low'>Low: $lowCount</span>",
+    "    </p>",
+    "</div>",
+    "<div class='card'>",
+    "    <h2>Detected Security Findings & Persistence Leads</h2>",
+    "    <p><i>Review accounts and dependencies before taking automated remediation actions.</i></p>",
+    "    <table>",
+    "    <tr><th>Severity</th><th>Object / System</th><th>Issue Description</th><th>Evidence / Configuration</th></tr>",
+    "    $joinedRows",
+    "    </table>",
+    "</div>",
+    "</body>",
+    "</html>"
+)
 
-$html | Set-Content "$outDir\Report.html" -Encoding UTF8
+$html = $htmlLines -join "`n"
+$htmlPath = Join-Path -Path $outDir -ChildPath "Report.html"
+$html | Set-Content -Path $htmlPath -Encoding UTF8
 
 Write-Host "`n[✔] Audit complete!" -ForegroundColor Green
-Write-Host " -> HTML Summary:      $outDir\Report.html"
+Write-Host " -> HTML Summary:      $htmlPath"
 Write-Host " -> Findings CSV:      $outDir\Findings.csv"
-Write-Host " -> Remediation Plan:  $outDir\Remediate_Findings.ps1"
+Write-Host " -> Remediation Plan:  $remediationPath"
 Write-Host " -> Raw CSV Exports:   $outDir"
+
+```
