@@ -1,290 +1,384 @@
-# =====================================================================
-# IRSEC Active Directory & DNS Security Audit Script
-# Compatible with Windows Server 2012 R2 through 2025
-# =====================================================================
+[CmdletBinding()]
+param(
+    [string]$OutputRoot = "C:\AD_Audit",
+    [int]$StaleDays = 90
+)
 
-#Requires -RunAsAdministrator
-
-# 1. Create Output Folder
-$OutputFolder = "C:\AD_IRSEC_Audit_" + (Get-Date -Format "yyyyMMdd-HHmmss")
-New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
-
-Write-Host "[+] Starting AD Audit. Output directory: $OutputFolder" -ForegroundColor Cyan
-
-# 2. Verify Module
+# ----------------------------------------------------------------------
+# 1. Environment & Dependency Checks
+# ----------------------------------------------------------------------
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
-    Write-Host "Active Directory module missing. Installing RSAT..." -ForegroundColor Yellow
+    Write-Host "Active Directory module not found. Attempting RSAT installation..." -ForegroundColor Yellow
     try {
-        Add-WindowsCapability -Online -Name "Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0" -ErrorAction Stop
+        Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0 -ErrorAction Stop
     } catch {
-        Write-Error "Cannot install AD RSAT module automatically. Please install RSAT manually."
-        return
+        Write-Error "Failed to install Active Directory RSAT tools. Run as Administrator or install manually."
+        exit
     }
 }
 
-Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+if (-not (Get-Module -ListAvailable -Name DnsServer)) {
+    Write-Host "DnsServer module not found. Script will fall back to WMI/CIM where necessary..." -ForegroundColor Yellow
+}
 
-# 3. Discover Domain
+Import-Module ActiveDirectory -ErrorAction Stop
+
+# ----------------------------------------------------------------------
+# 2. Domain Discovery & Output Setup
+# ----------------------------------------------------------------------
 try {
     $domain = Get-ADDomain -ErrorAction Stop
-    $domainName = $domain.DNSRoot
 } catch {
-    Write-Host "Could not automatically discover domain. Prompting for Domain Controller..." -ForegroundColor Yellow
-    $dcTarget = Read-Host "Enter Domain Controller IP or Hostname"
+    Write-Warning "Default ADWS discovery failed: $_"
+    $dcTarget = Read-Host "Enter the FQDN or IP of a target Domain Controller (e.g. dc01.domain.com)"
     $domain = Get-ADDomain -Server $dcTarget -ErrorAction Stop
-    $domainName = $domain.DNSRoot
 }
+
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$outDir = Join-Path -Path $OutputRoot -ChildPath $stamp
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
 $findings = [System.Collections.Generic.List[object]]::new()
-$remediationCmds = [System.Collections.Generic.List[string]]::new()
-$remediationCmds.Add("# Auto-generated Remediation Script")
-$remediationCmds.Add("# Generated: " + (Get-Date))
-$remediationCmds.Add("")
+$cutoff = (Get-Date).AddDays(-$StaleDays)
 
-$staleCutoff = (Get-Date).AddDays(-30)
+Write-Host "Collecting inventory for domain: $($domain.DNSRoot)..." -ForegroundColor Cyan
 
-# 4. Domain Controllers
-Write-Host "[+] Auditing Domain Controllers..." -ForegroundColor Gray
-try {
-    $dcs = Get-ADDomainController -Filter * | Select-Object HostName, IPv4Address, Site, IsGlobalCatalog, IsReadOnly, OperatingSystem
-    $dcs | Export-Csv -Path "$OutputFolder\DomainControllers.csv" -NoTypeInformation
-} catch {
-    Write-Warning "DC Query failed: $_"
-}
+# ----------------------------------------------------------------------
+# 3. Domain Controllers
+# ----------------------------------------------------------------------
+$dcs = Get-ADDomainController -Filter * |
+    Select-Object HostName, IPv4Address, Site, IsGlobalCatalog,
+        IsReadOnly, OperatingSystem, OperationMasterRoles
 
-# 5. User Account Audit
-Write-Host "[+] Auditing User Accounts..." -ForegroundColor Gray
-try {
-    $userProps = @('Enabled', 'LastLogonDate', 'PasswordLastSet', 'PasswordNeverExpires', 'PasswordNotRequired', 'DoesNotRequirePreAuth', 'AdminCount', 'ServicePrincipalNames', 'whenCreated')
-    $users = Get-ADUser -Filter * -Properties $userProps -ErrorAction Stop
-    
-    $users | Select-Object Name, SamAccountName, Enabled, LastLogonDate, PasswordLastSet, PasswordNeverExpires, PasswordNotRequired, DoesNotRequirePreAuth, AdminCount, whenCreated, DistinguishedName | Export-Csv -Path "$OutputFolder\Users.csv" -NoTypeInformation
+$dcs | Export-Csv "$outDir\DomainControllers.csv" -NoTypeInformation
 
-    foreach ($u in $users) {
-        # Check PasswordNotRequired
-        if ($u.Enabled -and $u.PasswordNotRequired) {
-            $findings.Add([pscustomobject]@{
-                Severity = "High"
-                Object   = $u.SamAccountName
-                Issue    = "PasswordNotRequired Set"
-                Evidence = "PasswordNotRequired = True"
-            })
-            $remediationCmds.Add("Set-ADUser -Identity '$($u.SamAccountName)' -PasswordNotRequired `$false")
-        }
+# ----------------------------------------------------------------------
+# 4. User Accounts & Security Risk Checks
+# ----------------------------------------------------------------------
+$users = Get-ADUser -Filter * -Properties Enabled, LastLogonDate,
+    PasswordLastSet, PasswordNeverExpires, PasswordNotRequired,
+    AdminCount, ServicePrincipalNames, DoesNotRequirePreAuth,
+    TrustedForDelegation, whenCreated |
+    Select-Object Name, SamAccountName, Enabled, LastLogonDate,
+        PasswordLastSet, PasswordNeverExpires, PasswordNotRequired,
+        AdminCount, ServicePrincipalNames, DoesNotRequirePreAuth,
+        TrustedForDelegation, whenCreated, DistinguishedName
 
-        # Check Pre-Auth Disabled (AS-REP Roasting Target)
-        if ($u.Enabled -and $u.DoesNotRequirePreAuth) {
-            $findings.Add([pscustomobject]@{
-                Severity = "High"
-                Object   = $u.SamAccountName
-                Issue    = "AS-REP Roastable (Pre-Auth Disabled)"
-                Evidence = "DoesNotRequirePreAuth = True"
-            })
-            $remediationCmds.Add("Set-ADUser -Identity '$($u.SamAccountName)' -DoesNotRequirePreAuth `$false")
-        }
+$users | Export-Csv "$outDir\Users.csv" -NoTypeInformation
 
-        # Check Kerberoastable User
-        if ($u.Enabled -and $u.ServicePrincipalNames -and $u.AdminCount -ne 1) {
-            $spnList = ($u.ServicePrincipalNames) -join "; "
-            $findings.Add([pscustomobject]@{
-                Severity = "Medium"
-                Object   = $u.SamAccountName
-                Issue    = "Kerberoastable Account (SPN Set on Non-Admin)"
-                Evidence = "SPNs: $spnList"
-            })
-        }
-
-        # Check PasswordNeverExpires
-        if ($u.Enabled -and $u.PasswordNeverExpires) {
-            $findings.Add([pscustomobject]@{
-                Severity = "Medium"
-                Object   = $u.SamAccountName
-                Issue    = "Password Never Expires"
-                Evidence = "PasswordNeverExpires = True"
-            })
-            $remediationCmds.Add("Set-ADUser -Identity '$($u.SamAccountName)' -PasswordNeverExpires `$false")
-        }
-
-        # Stale User Check
-        if ($u.Enabled -and $u.LastLogonDate -and $u.LastLogonDate -lt $staleCutoff) {
-            $findings.Add([pscustomobject]@{
-                Severity = "Medium"
-                Object   = $u.SamAccountName
-                Issue    = "Stale Enabled User (Inactive > 30 Days)"
-                Evidence = "LastLogonDate = $($u.LastLogonDate)"
-            })
-            $remediationCmds.Add("# Disable-ADAccount -Identity '$($u.SamAccountName)'")
-        }
-    }
-} catch {
-    Write-Warning "User Query failed: $_"
-}
-
-# 6. Safe Check for Shadow Credentials
-try {
-    $shadowUsers = Get-ADUser -Filter 'msDS-KeyCredentialLink -like "*"' -Properties "msDS-KeyCredentialLink" -ErrorAction SilentlyContinue
-    foreach ($su in $shadowUsers) {
+foreach ($u in $users) {
+    if ($u.Enabled -and $u.PasswordNotRequired) {
         $findings.Add([pscustomobject]@{
             Severity = "High"
-            Object   = $su.SamAccountName
-            Issue    = "Shadow Credentials Persistence Detected"
-            Evidence = "msDS-KeyCredentialLink attribute populated"
+            Object   = $u.SamAccountName
+            Issue    = "Enabled account has PasswordNotRequired set"
+            Evidence = "PasswordNotRequired = True"
         })
-        $remediationCmds.Add("Set-ADUser -Identity '$($su.SamAccountName)' -Clear 'msDS-KeyCredentialLink'")
     }
-} catch {}
 
-# 7. krbtgt Password Age Check
-try {
-    $krbtgt = Get-ADUser krbtgt -Properties PasswordLastSet -ErrorAction SilentlyContinue
-    if ($krbtgt -and $krbtgt.PasswordLastSet -and $krbtgt.PasswordLastSet -lt (Get-Date).AddDays(-180)) {
+    if ($u.Enabled -and $u.DoesNotRequirePreAuth) {
         $findings.Add([pscustomobject]@{
             Severity = "High"
-            Object   = "krbtgt"
-            Issue    = "krbtgt Password Older Than 180 Days (Golden Ticket Risk)"
-            Evidence = "PasswordLastSet = $($krbtgt.PasswordLastSet)"
+            Object   = $u.SamAccountName
+            Issue    = "AS-REP Roastable Account"
+            Evidence = "DoesNotRequirePreAuth = True"
         })
     }
-} catch {}
 
-# 8. Computer Audit & Delegation
-Write-Host "[+] Auditing Computer Objects..." -ForegroundColor Gray
-try {
-    $compProps = @('Enabled', 'LastLogonDate', 'OperatingSystem', 'OperatingSystemVersion', 'PasswordLastSet', 'TrustedForDelegation')
-    $computers = Get-ADComputer -Filter * -Properties $compProps -ErrorAction Stop
-    $computers | Select-Object Name, Enabled, LastLogonDate, OperatingSystem, OperatingSystemVersion, PasswordLastSet, TrustedForDelegation, DistinguishedName | Export-Csv -Path "$OutputFolder\Computers.csv" -NoTypeInformation
-
-    foreach ($c in $computers) {
-        if ($c.Enabled -and $c.LastLogonDate -and $c.LastLogonDate -lt $staleCutoff) {
-            $findings.Add([pscustomobject]@{
-                Severity = "Medium"
-                Object   = $c.Name
-                Issue    = "Stale Enabled Computer"
-                Evidence = "LastLogonDate = $($c.LastLogonDate)"
-            })
-        }
-
-        if ($c.Enabled -and $c.TrustedForDelegation) {
-            $findings.Add([pscustomobject]@{
-                Severity = "High"
-                Object   = $c.Name
-                Issue    = "Unconstrained Delegation Enabled"
-                Evidence = "TrustedForDelegation = True"
-            })
-            $remediationCmds.Add("Set-ADAccountControl -Identity '$($c.Name)' -TrustedForDelegation `$false")
-        }
+    if ($u.Enabled -and $u.ServicePrincipalNames -and $u.ServicePrincipalNames.Count -gt 0) {
+        $findings.Add([pscustomobject]@{
+            Severity = "Medium"
+            Object   = $u.SamAccountName
+            Issue    = "Kerberoastable User Account"
+            Evidence = "SPNs: $($u.ServicePrincipalNames -join ', ')"
+        })
     }
-} catch {
-    Write-Warning "Computer Query failed: $_"
+
+    if ($u.Enabled -and $u.TrustedForDelegation) {
+        $findings.Add([pscustomobject]@{
+            Severity = "High"
+            Object   = $u.SamAccountName
+            Issue    = "User configured for Unconstrained Delegation"
+            Evidence = "TrustedForDelegation = True"
+        })
+    }
+
+    if ($u.Enabled -and $u.PasswordNeverExpires) {
+        $findings.Add([pscustomobject]@{
+            Severity = "Medium"
+            Object   = $u.SamAccountName
+            Issue    = "Password never expires"
+            Evidence = "PasswordNeverExpires = True"
+        })
+    }
+
+    if ($u.Enabled -and $u.LastLogonDate -and $u.LastLogonDate -lt $cutoff) {
+        $findings.Add([pscustomobject]@{
+            Severity = "Medium"
+            Object   = $u.SamAccountName
+            Issue    = "Potentially stale enabled user"
+            Evidence = "LastLogonDate = $($u.LastLogonDate)"
+        })
+    }
 }
 
-# 9. Safe Check for Resource-Based Constrained Delegation (RBCD)
-try {
-    $rbcdComps = Get-ADComputer -Filter 'msDS-AllowedToActOnBehalfOfOtherIdentity -like "*"' -Properties "msDS-AllowedToActOnBehalfOfOtherIdentity" -ErrorAction SilentlyContinue
-    foreach ($rc in $rbcdComps) {
+# ----------------------------------------------------------------------
+# 5. KRBTGT Account Password Check
+# ----------------------------------------------------------------------
+$krbtgt = Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties PasswordLastSet
+if ($krbtgt -and $krbtgt.PasswordLastSet -and $krbtgt.PasswordLastSet -lt (Get-Date).AddDays(-180)) {
+    $findings.Add([pscustomobject]@{
+        Severity = "High"
+        Object   = "krbtgt"
+        Issue    = "KRBTGT password is over 180 days old"
+        Evidence = "PasswordLastSet = $($krbtgt.PasswordLastSet) (Risk of persistent Golden Ticket abuse)"
+    })
+}
+
+# ----------------------------------------------------------------------
+# 6. Computer Accounts & Unconstrained Delegation Checks
+# ----------------------------------------------------------------------
+$computers = Get-ADComputer -Filter * -Properties Enabled,
+    LastLogonDate, OperatingSystem, OperatingSystemVersion,
+    PasswordLastSet, TrustedForDelegation |
+    Select-Object Name, Enabled, LastLogonDate, OperatingSystem,
+        OperatingSystemVersion, PasswordLastSet, TrustedForDelegation, DistinguishedName
+
+$computers | Export-Csv "$outDir\Computers.csv" -NoTypeInformation
+
+foreach ($c in $computers) {
+    if ($c.Enabled -and $c.LastLogonDate -and $c.LastLogonDate -lt $cutoff) {
         $findings.Add([pscustomobject]@{
-            Severity = "High"
-            Object   = $rc.Name
-            Issue    = "RBCD Persistence Detected"
-            Evidence = "msDS-AllowedToActOnBehalfOfOtherIdentity populated"
+            Severity = "Medium"
+            Object   = $c.Name
+            Issue    = "Potentially stale enabled computer"
+            Evidence = "LastLogonDate = $($c.LastLogonDate)"
         })
-        $remediationCmds.Add("Set-ADComputer -Identity '$($rc.Name)' -Clear 'msDS-AllowedToActOnBehalfOfOtherIdentity'")
     }
-} catch {}
 
-# 10. Groups & Privileged Access Audit
-Write-Host "[+] Auditing Groups & Privileged Members..." -ForegroundColor Gray
+    if ($c.Enabled -and $c.TrustedForDelegation) {
+        $findings.Add([pscustomobject]@{
+            Severity = "Medium"
+            Object   = $c.Name
+            Issue    = "Unconstrained Delegation Enabled"
+            Evidence = "TrustedForDelegation = True"
+        })
+    }
+}
+
+# ----------------------------------------------------------------------
+# 7. Groups & Privileged Membership
+# ----------------------------------------------------------------------
+$groups = Get-ADGroup -Filter * -Properties GroupCategory,
+    GroupScope, AdminCount, whenCreated |
+    Select-Object Name, SamAccountName, SID, GroupCategory,
+        GroupScope, AdminCount, whenCreated, DistinguishedName
+
+$groups | Export-Csv "$outDir\Groups.csv" -NoTypeInformation
+
+$privilegedGroupNames = @(
+    "Domain Admins",
+    "Enterprise Admins",
+    "Schema Admins",
+    "Administrators",
+    "Account Operators",
+    "Backup Operators"
+)
+
+$privileged = foreach ($name in $privilegedGroupNames) {
+    try {
+        $group = Get-ADGroup -Identity $name -ErrorAction Stop
+        Get-ADGroupMember -Identity $group -Recursive |
+            Select-Object @{N="PrivilegedGroup";E={$name}},
+                Name, SamAccountName, ObjectClass, SID
+    } catch {
+        Write-Warning "Could not query group '$name': $_"
+    }
+}
+
+$privileged | Export-Csv "$outDir\PrivilegedMembers.csv" -NoTypeInformation
+
+# ----------------------------------------------------------------------
+# 8. Password Policy
+# ----------------------------------------------------------------------
 try {
-    $groups = Get-ADGroup -Filter * -Properties GroupCategory, GroupScope, AdminCount, whenCreated
-    $groups | Select-Object Name, SamAccountName, SID, GroupCategory, GroupScope, AdminCount, whenCreated, DistinguishedName | Export-Csv -Path "$OutputFolder\Groups.csv" -NoTypeInformation
+    Get-ADDefaultDomainPasswordPolicy |
+        Select-Object ComplexityEnabled, MinPasswordLength,
+            PasswordHistoryCount, MaxPasswordAge, LockoutThreshold,
+            LockoutDuration, LockoutObservationWindow |
+        Export-Csv "$outDir\PasswordPolicy.csv" -NoTypeInformation
+} catch {
+    Write-Warning "Password policy query failed: $_"
+}
 
-    $privGroups = @("Domain Admins", "Enterprise Admins", "Schema Admins", "Administrators")
-    $privMembers = foreach ($pg in $privGroups) {
+# ----------------------------------------------------------------------
+# 9. DNS Configuration & Record Triage
+# ----------------------------------------------------------------------
+Write-Host "Querying DNS configuration..." -ForegroundColor Cyan
+
+try {
+    $dnsZones = Get-DnsServerZone -ErrorAction Stop | 
+        Select-Object ZoneName, ZoneType, DynamicUpdate, IsDsIntegrated, IsReverseLookupZone
+} catch {
+    $dnsZones = Get-CimInstance -Namespace "root\MicrosoftDNS" -ClassName "MicrosoftDNS_Zone" -ErrorAction SilentlyContinue |
+        Select-Object @{N="ZoneName";E={$_.Name}}, ZoneType, @{N="DynamicUpdate";E={$_.AllowUpdate}}, @{N="IsDsIntegrated";E={$_.DsIntegrated}}, @{N="IsReverseLookupZone";E={$_.Reverse}}
+}
+
+if ($dnsZones) {
+    $dnsZones | Export-Csv "$outDir\DNS_Zones.csv" -NoTypeInformation
+
+    foreach ($zone in $dnsZones) {
+        if ($zone.DynamicUpdate -eq "NonsecureAndSecure" -or $zone.DynamicUpdate -eq 1) {
+            $findings.Add([pscustomobject]@{
+                Severity = "High"
+                Object   = $zone.ZoneName
+                Issue    = "DNS Zone allows non-secure dynamic updates"
+                Evidence = "DynamicUpdate = $($zone.DynamicUpdate) (Allows unauthenticated DNS poisoning)"
+            })
+        }
+    }
+
+    $dnsRecords = foreach ($zone in $dnsZones) {
+        $zName = $zone.ZoneName
         try {
-            Get-ADGroupMember -Identity $pg -ErrorAction SilentlyContinue | Select-Object @{N="PrivilegedGroup";E={$pg}}, Name, SamAccountName, ObjectClass, SID
-        } catch {}
-    }
-    $privMembers | Export-Csv -Path "$OutputFolder\PrivilegedMembers.csv" -NoTypeInformation
-} catch {
-    Write-Warning "Group Query failed: $_"
-}
+            Get-DnsServerResourceRecord -ZoneName $zName -ErrorAction Stop | ForEach-Object {
+                $recordDataStr = switch ($_.RecordType) {
+                    "A"     { $_.RecordData.IPv4Address.IPAddressToString }
+                    "AAAA"  { $_.RecordData.IPv6Address.IPAddressToString }
+                    "CNAME" { $_.RecordData.HostNameAlias }
+                    "TXT"   { $_.RecordData.DescriptiveText -join " " }
+                    Default { $_.RecordData.ToString() }
+                }
 
-# 11. DNS Audit
-Write-Host "[+] Auditing DNS Settings & Records..." -ForegroundColor Gray
-try {
-    $dnsZones = Get-DnsServerZone -ErrorAction Stop | Select-Object ZoneName, ZoneType, DynamicUpdate, IsDsIntegrated
-    $dnsZones | Export-Csv -Path "$OutputFolder\DNS_Zones.csv" -NoTypeInformation
-
-    foreach ($z in $dnsZones) {
-        if ($z.DynamicUpdate -eq "NonsecureAndSecure" -or $z.DynamicUpdate -eq 1) {
-            $findings.Add([pscustomobject]@{
-                Severity = "High"
-                Object   = $z.ZoneName
-                Issue    = "Unauthenticated DNS Dynamic Updates Allowed"
-                Evidence = "DynamicUpdate = $($z.DynamicUpdate)"
-            })
-            $remediationCmds.Add("Set-DnsServerPrimaryZone -Name '$($z.ZoneName)' -DynamicUpdate Secure")
-        }
-
-        try {
-            $records = Get-DnsServerResourceRecord -ZoneName $z.ZoneName -ErrorAction SilentlyContinue
-            foreach ($r in $records) {
-                $hostName = $r.HostName.ToLower()
-                if (($hostName -eq "wpad" -or $hostName -eq "isatap") -and -not $r.Timestamp) {
-                    $findings.Add([pscustomobject]@{
-                        Severity = "High"
-                        Object   = "$($r.HostName).$($z.ZoneName)"
-                        Issue    = "Static WPAD/ISATAP DNS Record Found"
-                        Evidence = "RecordType = $($r.RecordType)"
-                    })
-                    $remediationCmds.Add("Remove-DnsServerResourceRecord -ZoneName '$($z.ZoneName)' -Name '$($r.HostName)' -RRType '$($r.RecordType)' -Force")
+                [pscustomobject]@{
+                    ZoneName   = $zName
+                    HostName   = $_.HostName
+                    RecordType = $_.RecordType
+                    RecordData = $recordDataStr
+                    TimeToLive = $_.TimeToLive.TotalSeconds
+                    Timestamp  = $_.TimeStamp
                 }
             }
-        } catch {}
+        } catch {
+            Get-CimInstance -Namespace "root\MicrosoftDNS" -ClassName "MicrosoftDNS_ResourceRecord" -Filter "ContainerName='$zName'" -ErrorAction SilentlyContinue |
+                Select-Object @{N="ZoneName";E={$_.ContainerName}}, @{N="HostName";E={$_.OwnerName}}, @{N="RecordType";E={$_.RecordClass}}, @{N="RecordData";E={$_.TextRepresentation}}, TimeToLive, Timestamp
+        }
+    }
+
+    if ($dnsRecords) {
+        $dnsRecords | Export-Csv "$outDir\DNS_ResourceRecords.csv" -NoTypeInformation
+
+        foreach ($rec in $dnsRecords) {
+            if ($rec.HostName -in @("wpad", "isatap") -and -not $rec.Timestamp) {
+                $findings.Add([pscustomobject]@{
+                    Severity = "High"
+                    Object   = "$($rec.HostName).$($rec.ZoneName)"
+                    Issue    = "Static WPAD/ISATAP record detected"
+                    Evidence = "Points to $($rec.RecordData). High risk of MitM hijacking."
+                })
+            }
+
+            if ($rec.RecordType -in @("A", "AAAA") -and -not $rec.Timestamp -and $rec.HostName -ne "@") {
+                $findings.Add([pscustomobject]@{
+                    Severity = "Low"
+                    Object   = "$($rec.HostName).$($rec.ZoneName)"
+                    Issue    = "Static A/AAAA record (No timestamp)"
+                    Evidence = "Target IP: $($rec.RecordData)"
+                })
+            }
+
+            if ($rec.RecordType -eq "TXT") {
+                $findings.Add([pscustomobject]@{
+                    Severity = "Medium"
+                    Object   = "$($rec.HostName).$($rec.ZoneName)"
+                    Issue    = "DNS TXT record found"
+                    Evidence = "Data: $($rec.RecordData)"
+                })
+            }
+        }
+    }
+}
+
+try {
+    $globalBlocklist = Get-DnsServerGlobalQueryBlockList -ErrorAction Stop
+    if (-not $globalBlocklist.Enable) {
+        $findings.Add([pscustomobject]@{
+            Severity = "High"
+            Object   = "DNS Server Configuration"
+            Issue    = "DNS Global Query BlockList is disabled"
+            Evidence = "Enable = False (Allows WPAD/ISATAP resolution)"
+        })
     }
 } catch {
-    Write-Warning "DNS Query skipped or unavailable: $_"
+    # Non-DNS DC workstation context
 }
 
-# 12. Save Results & Build Reports
-$findings | Export-Csv -Path "$OutputFolder\Findings.csv" -NoTypeInformation
-$remediationCmds | Set-Content -Path "$OutputFolder\Remediate.ps1" -Encoding UTF8
+# Export findings to CSV
+$findings | Export-Csv "$outDir\Findings.csv" -NoTypeInformation
 
-$highCount = ($findings | Where-Object Severity -eq "High").Count
-$medCount = ($findings | Where-Object Severity -eq "Medium").Count
+# ----------------------------------------------------------------------
+# 10. Generate HTML Report
+# ----------------------------------------------------------------------
+$highCount   = @($findings | Where-Object Severity -eq "High").Count
+$mediumCount = @($findings | Where-Object Severity -eq "Medium").Count
+$lowCount    = @($findings | Where-Object Severity -eq "Low").Count
 
-$htmlRows = foreach ($f in $findings) {
-    $bg = if ($f.Severity -eq "High") { "#f8d7da" } else { "#fff3cd" }
-    "<tr style='background:$bg;'><td><b>$($f.Severity)</b></td><td>$($f.Object)</td><td>$($f.Issue)</td><td>$($f.Evidence)</td></tr>"
+$rows = foreach ($f in $findings) {
+    $severity = [System.Net.WebUtility]::HtmlEncode($f.Severity)
+    $obj      = [System.Net.WebUtility]::HtmlEncode($f.Object)
+    $issue    = [System.Net.WebUtility]::HtmlEncode($f.Issue)
+    $evidence = [System.Net.WebUtility]::HtmlEncode($f.Evidence)
+
+    $badgeColor = switch ($f.Severity) {
+        "High"   { "#d9534f" }
+        "Medium" { "#f0ad4e" }
+        "Low"    { "#5bc0de" }
+        Default  { "#777777" }
+    }
+
+    "<tr><td><span style='background-color: $badgeColor; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;'>$severity</span></td><td>$obj</td><td>$issue</td><td>$evidence</td></tr>"
 }
-$htmlRowString = $htmlRows -join "`n"
 
-$htmlText = @"
-<!DOCTYPE html>
+$html = @"
+<!doctype html>
 <html>
 <head>
-<title>AD Security Report</title>
+<meta charset="utf-8">
+<title>AD Security Audit & Inventory Report</title>
 <style>
-body { font-family: sans-serif; margin: 20px; background: #f8f9fa; }
-table { border-collapse: collapse; width: 100%; margin-top: 15px; background: #fff; }
-th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-th { background: #343a40; color: #fff; }
+body { font-family: 'Segoe UI', Arial, sans-serif; margin: 30px; background-color: #f8f9fa; color: #333; }
+.container { background: #ffffff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+h1 { color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 8px; }
+table { border-collapse: collapse; width: 100%; margin-top: 15px; }
+th, td { border: 1px solid #dee2e6; padding: 10px; text-align: left; }
+th { background: #e9ecef; }
+tr:nth-child(even) { background-color: #f2f2f2; }
+.summary-box { background: #e8f4f8; padding: 12px; border-left: 4px solid #17a2b8; margin-bottom: 20px; }
 </style>
 </head>
 <body>
-<h2>Active Directory & DNS Audit Dashboard</h2>
-<p>Domain: $domainName | Date: $(Get-Date)</p>
-<p><b>Total High Severity:</b> $highCount | <b>Total Medium Severity:</b> $medCount</p>
+<div class="container">
+<h1>Active Directory Security & Triage Inventory</h1>
+<div class="summary-box">
+    <p><strong>Domain:</strong> $($domain.DNSRoot)</p>
+    <p><strong>Generated:</strong> $(Get-Date)</p>
+    <p><strong>Summary:</strong> Users: $(@($users).Count) | Computers: $(@($computers).Count) | Groups: $(@($groups).Count) | DNS Zones: $(@($dnsZones).Count)</p>
+    <p><strong>Findings Severity Breakdown:</strong> <span style='color: #d9534f; font-weight: bold;'>High: $highCount</span> | <span style='color: #f0ad4e; font-weight: bold;'>Medium: $mediumCount</span> | <span style='color: #5bc0de; font-weight: bold;'>Low: $lowCount</span></p>
+</div>
+
+<h2>Triage Findings</h2>
+<p><em>Findings represent vectors for potential exploitation or persistence. Validate findings before taking remediations.</em></p>
 <table>
-<tr><th>Severity</th><th>Target Object</th><th>Issue</th><th>Evidence</th></tr>
-$htmlRowString
+<tr><th>Severity</th><th>Object</th><th>Issue</th><th>Evidence</th></tr>
+$($rows -join "`n")
 </table>
+</div>
 </body>
 </html>
 "@
 
-$htmlText | Set-Content -Path "$OutputFolder\Report.html" -Encoding UTF8
+$html | Set-Content "$outDir\Report.html" -Encoding UTF8
 
-Write-Host "`n[✔] SUCCESS! Audit Complete." -ForegroundColor Green
-Write-Host "Output Folder: $OutputFolder"
-Write-Host "Report File:   $OutputFolder\Report.html"
+Write-Host "`nInventory complete!" -ForegroundColor Green
+Write-Host "Report generated at: $outDir\Report.html"
+Write-Host "CSV exports located at: $outDir"
