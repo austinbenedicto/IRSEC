@@ -180,9 +180,9 @@ foreach ($dc in $DomainControllers) {
     foreach ($port in $RequiredPorts) {
         $isOpen = Test-PortFast -ComputerName $dc -Port $port -TimeoutMs $PortTimeoutMs
         if ($isOpen) {
-            Add-Check "Port Check ($dc:$port)" "PASS" "TCP Port $port open."
+            Add-Check "Port Check ($($dc):$port)" "PASS" "TCP Port $port open."
         } else {
-            Add-Check "Port Check ($dc:$port)" "WARN" "TCP Port $port filtered or closed." "Check firewalls and service states on $dc."
+            Add-Check "Port Check ($($dc):$port)" "WARN" "TCP Port $port filtered or closed." "Check firewalls and service states on $dc."
         }
     }
 }
@@ -197,7 +197,7 @@ foreach ($dc in $DomainControllers) {
         
         foreach ($svc in $adServices) {
             $svcStatus = if ($svc.State -eq 'Running') { "PASS" } else { "WARN" }
-            Add-Check "DC Service ($dc: $($svc.Name))" $svcStatus "State=$($svc.State)"
+            Add-Check "DC Service ($($dc): $($svc.Name))" $svcStatus "State=$($svc.State)"
         }
         Remove-CimSession $session -ErrorAction SilentlyContinue
     } catch {
@@ -208,7 +208,7 @@ foreach ($dc in $DomainControllers) {
 
             foreach ($svc in $adServices) {
                 $svcStatus = if ($svc.Status -eq 'Running') { "PASS" } else { "WARN" }
-                Add-Check "DC Service ($dc: $($svc.Name))" $svcStatus "Status=$($svc.Status)"
+                Add-Check "DC Service ($($dc): $($svc.Name))" $svcStatus "Status=$($svc.Status)"
             }
         } catch {
             Add-Check "DC Service Check ($dc)" "WARN" "Failed to query services via CIM/WinRM: $($_.Exception.Message)" "Verify WinRM / RPC access."
@@ -285,7 +285,7 @@ if (Test-CommandAvailable "dcdiag.exe") {
     foreach ($dc in $DomainControllers) {
         $safeName = $dc -replace '[^a-zA-Z0-9_.-]', '_'
         $log = Join-Path $outDir "dcdiag-$safeName.txt"
-        $output = & dcdiag.exe "/s:$dc" /test:Advertising /test:Services /test:SysVolCheck /test:NetLogons 2>&1
+        $output = & dcdiag.exe "/s:$($dc)" /test:Advertising /test:Services /test:SysVolCheck /test:NetLogons 2>&1
         $exit = $LASTEXITCODE
         $output | Set-Content $log
 
@@ -453,8 +453,8 @@ if ($GenerateHtmlReport) {
         "<tr>
             <td style='width: 80px;'><span class='$($r.Status)'>$($r.Status)</span></td>
             <td><b>$($r.Check)</b></td>
-            <td>$([System.Web.HttpUtility]::HtmlEncode($r.Details))</td>
-            <td>$([System.Web.HttpUtility]::HtmlEncode($r.Recommendation))</td>
+            <td>$([System.Net.WebUtility]::HtmlEncode($r.Details))</td>
+            <td>$([System.Net.WebUtility]::HtmlEncode($r.Recommendation))</td>
          </tr>"
     }
 

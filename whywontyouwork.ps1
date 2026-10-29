@@ -1,7 +1,7 @@
 #really hoping the file name isn't accurate... i wrote it before creating the script
 
 $MyIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254*" }).IPAddress | Select-Object -First 1
-
+$Sadness = "10.64.1.0/24"
 $LockDown = $true
 Write-Host "Enter the scoring box IP"
 $ScoreCheck = Read-Host 
