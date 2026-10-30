@@ -19,6 +19,10 @@ user_list=(
   "pitlaner"
   "reserve"
   "gunners"
+
+  "whiteteam"
+  "dd-agent"
+  "ddagentuser"
 )
 
 # reads each line in the /etc/passwd file and labels each variable
