@@ -244,7 +244,7 @@ function global:Groups{
 
 function global:Users{
 	$result = @()
-	$allowed = "JW, Guest, Administrator, DefaultAccount, WDAGUtilityAccount"
+	$allowed = "principal, sportingdir, chiefeng, strategist, pitcrew, mechanic, analyst, driver, tierman, fuelman, scrutineer, techdirector, crewchief, firecrew, jackcrew, garagecrew, celebrity, pitlaner, reserve, gunners, whiteteam, dd-agent, ddagentuser"
 	$allowed = $allowed -split ", "
 	$current = (net user)[4 .. ((net user).Length - 2)] -split '\s+' | Where-Object { $_ -ne '' }
 	$current = $current -split "`n"
