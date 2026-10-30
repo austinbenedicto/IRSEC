@@ -1,58 +1,37 @@
+# Audit-LocalUsers.ps1
 
+$AdminList = @("scrutineer", "techdirector", "crewchief", "firecrew")
+$UserList  = @("jackcrew", "garagecrew", "celebrity", "pitlaner", "reserve", "gunners")
 
-$EnabledUsers = Get-LocalUser | Where-Object {$_.Enabled -eq $true}
+# Protected system accounts that must never be disabled (Rules 6 & 14)
+$ProtectedAccounts = @("whiteteam", "ddagentuser", "dd-agent")
 
-$AdminList       = @("scrutineer", "techdirector", "crewchief", "firecrew", "whiteteam")
-$UserList        = @("jackcrew", "garagecrew", "celebrity", "pitlaner", "reserve", "gunners", "whiteteam")
-$DomainAdminList = @("principal", "sportingdir", "chiefeng", "strategist", "whiteteam")
-$DomainUserList  = @("pitcrew", "mechanic", "analyst", "driver", "tireman", "fuelman", "whiteteam")
+$allUsers = Get-LocalUser
 
-$result = @()
+foreach ($user in $allUsers) {
+    $username = $user.Name
 
-$groups = Get-LocalGroup
-$checked = @()
-foreach ($group in $groups) {
-	$members = Get-LocalGroupMember -Group $group.Name -ErrorAction SilentlyContinue | Where-Object {$_.PrincipalSource -eq 'Local'}
-		foreach($member in $members){
-			$member = (($member.Name -split "\\")[-1]).ToString().Trim()
-			if($checked -notcontains $member){
-				$memberEnabled = (Get-LocalUser -Name $member).Enabled
-				if($memberEnabled){
-					if($AdminList -notcontains $member -and $UserList -notcontains $member){
-						Write-Host Disable $member"? If the member contains `'dd`', DO NOT REMOVE, that is a DataDog Account"
-						$input = Read-Host
-						if($input -eq "y" -or $input -eq "Y"){
-							Disable-LocalUser -Name $member	
-							Write-Host "Disabled $member"
-						}
-					}
-				}
-				else{
-					if($AdminList -contains $member -or $UserList -contains $member){
-						Write-Host Enable $member"?"
-						$input = Read-Host
-						if($input -eq "y" -or $input -eq "Y"){
-							Enable-LocalUser -Name $member	
-							Write-Host "Enabled $member"
-						}
+    if ($ProtectedAccounts -contains $username) {
+        continue
+    }
 
-					}
-				}
-	
-				Get-LocalGroup | ForEach-Object {
-    					$GroupVal = $_
-    					if (Get-LocalGroupMember -Group $GroupVal.Name -Member $member -ErrorAction SilentlyContinue) {
-        					#Write-Host "$member is a member of local group: $($GroupVal.Name)"
-    					}
-				}
-			}
-			
-
-
-			
-		}
-		$checked += $member
+    if ($user.Enabled) {
+        if ($AdminList -notcontains $username -and $UserList -notcontains $username) {
+            $input = Read-Host "Disable unauthorized user '$username'? (y/n)"
+            if ($input -eq "y" -or $input -eq "Y") {
+                Disable-LocalUser -Name $username
+                Write-Host " [-] Disabled $username" -ForegroundColor Red
+            }
+        }
+    } 
+    # Audit Disabled Users: Prompt to enable if they are approved competition accounts
+    else {
+        if ($AdminList -contains $username -or $UserList -contains $username) {
+            $input = Read-Host "Enable approved user '$username'? (y/n)"
+            if ($input -eq "y" -or $input -eq "Y") {
+                Enable-LocalUser -Name $username
+                Write-Host " [+] Enabled $username" -ForegroundColor Green
+            }
+        }
+    }
 }
-
-
-$result
