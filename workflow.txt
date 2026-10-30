@@ -1,0 +1,96 @@
+IRSEC SCRIPT WORKFLOW — BLUE TEAM
+=================================
+
+START: Blue Team receives Linux host
+  |
+  v
+[Ansible setup.sh / install-scripts.yml]
+  Prepare controller and deploy tools to authorized targets.
+  (Deployment only; tools do not automatically execute.)
+  |
+  v
+[script-menu.sh]
+  Choose a local Bash script by number.
+  |
+  v
+[inventorier_adv.sh]
+  Record detailed system inventory and create baseline files.
+  |
+  v
+<Suspicious initial findings?>
+  | YES -> Investigate manually before trusting the baseline.
+  | NO
+  v
+[presistence.sh]
+  Check account files, SSH keys, cron, systemd, and other
+  persistence mechanisms against the recorded baseline.
+  |
+  v
+[watch.sh]
+  Monitor new users, listening ports, and running services.
+  |
+  v
+<New activity detected?>
+  | NO -> Continue monitoring with watch.sh.
+  | YES
+  v
+<What changed?>
+  | Network -> [network.sh]
+  |            Inspect sockets, ports, processes, routes,
+  |            DNS, and firewall configuration.
+  |
+  | Accounts -> [eval_user.sh]
+  |             Review accounts; may change passwords,
+  |             lock accounts, or delete accounts.
+  |
+  | Persistence -> [presistence.sh]
+  |                Compare persistence-related state.
+  |
+  | Suspicious files -> [yara_scan.sh]
+  |                     Scan files using repository YARA rules.
+  v
+<Confirmed threat?>
+  | NO -> Return to watch.sh.
+  | YES
+  v
+[backup.sh]
+  Preserve relevant files; create and verify compressed backups.
+  |
+  v
+[Document evidence and assess impact]
+  |
+  v
+<Remediation required?>
+  | Hostile IP -> [block-ip.sh]
+  |               Apply local IPv4 firewall DROP rules after review.
+  |
+  | Package repair -> [reinstall.sh]
+  |                   Perform APT package operations (Debian/Ubuntu).
+  |
+  | Account action -> [eval_user.sh]
+  |
+  | Other -> Investigate and remediate manually.
+  v
+[Verify scored services and connectivity]
+  |
+  v
+[Recheck with network.sh / presistence.sh]
+  |
+  +----> Return to watch.sh.
+
+ADDITIONAL TOOLS
+----------------
+- inventorier.sh: Quick inventory of OS, hostname, IPs, users, and ports.
+- backup.sh: Also supports listing, verifying, and restoring backups.
+- script-menu.sh: Automatically discovers Bash scripts in its configured directory.
+
+IMPORTANT NOTES
+---------------
+- This is a suggested manual response workflow, NOT an automatic execution chain.
+- Confirm competition authorization before deploying tools or modifying hosts.
+- The protected timing/Wazuh host must not be modified without White Team approval.
+- Preserve the whiteteam account and scored services.
+- block-ip.sh and script-menu.sh were created in this conversation but were not
+  present in the repository's main branch when last checked.
+- The repository spells the persistence script 'presistence.sh'.
+- Test the menu, baseline paths, YARA rule paths, and Ansible deployment in a lab.

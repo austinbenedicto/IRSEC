@@ -1,97 +1,38 @@
 ---
-- name: Install Linux scripts from scripts_linux
-  hosts: all
-  become: true
-  gather_facts: true
-
+# Deployment only. Does not execute tools or change scored services.
+- name: Distribute IRSEC Linux tools
+  hosts: linux
+  gather_facts: false
+  become: false
   vars:
-    linux_repo_scripts_dir: "{{ playbook_dir }}/scripts_linux"
-    linux_install_dir: "/opt/irsec/scripts"
-    install_mode: "0755"
-    watch_service_name: "irsec-watch"
-    watch_service_path: "/etc/systemd/system/{{ watch_service_name }}.service"
-
+    remote_dir: /tmp/irsec-tools
   tasks:
-    - name: Skip non-Linux hosts
-      ansible.builtin.meta: end_host
-      when: ansible_system != "Linux"
+    - name: Make target directory without Python
+      ansible.builtin.raw: "mkdir -p {{ (remote_dir ~ "/scripts") | quote }} {{ (remote_dir ~ "/yara/rules") | quote }}"
+      changed_when: false
+    - name: Copy Linux scripts without target Python
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/scripts_linux/"
+        dest: "{{ remote_dir }}/scripts/"
+        archive: true
+        delete: false
+        use_ssh_args: true
 
-    - name: Check Linux script source directory on controller
-      ansible.builtin.stat:
-        path: "{{ linux_repo_scripts_dir }}"
-      register: linux_scripts_dir_stat
-      delegate_to: localhost
-      become: false
-
-    - name: Assert Linux script source directory exists
-      ansible.builtin.assert:
-        that:
-          - linux_scripts_dir_stat.stat.exists
-          - linux_scripts_dir_stat.stat.isdir
-        fail_msg: >-
-          Linux script source directory '{{ linux_repo_scripts_dir }}' was not found
-          on the controller. Add scripts there before running this playbook.
-
-    - name: Ensure Linux install directory exists on target hosts
-      ansible.builtin.file:
-        path: "{{ linux_install_dir }}"
+- name: Distribute IRSEC Windows tools
+  hosts: windows
+  gather_facts: false
+  vars:
+    windows_dir: 'C:\IRSEC-Tools'
+  tasks:
+    - name: Create toolkit directory
+      ansible.windows.win_file:
+        path: "{{ windows_dir }}"
         state: directory
-        mode: "0755"
-
-    - name: Install Linux scripts from repository
-      ansible.builtin.copy:
-        src: "{{ linux_repo_scripts_dir }}/"
-        dest: "{{ linux_install_dir }}/"
-        mode: "{{ install_mode }}"
-      notify:
-        - Restart watcher service
-
-    - name: Require systemd for watcher management
-      ansible.builtin.assert:
-        that:
-          - ansible_service_mgr == "systemd"
-        fail_msg: >-
-          Watcher startup currently requires systemd. This host reports
-          ansible_service_mgr='{{ ansible_service_mgr }}'.
-
-    - name: Run inventorier baseline script
-      ansible.builtin.command:
-        cmd: "{{ linux_install_dir }}/inventorier.sh"
-
-    - name: Install watcher systemd unit
-      ansible.builtin.copy:
-        dest: "{{ watch_service_path }}"
-        mode: "0644"
-        content: |
-          [Unit]
-          Description=IRSEC watcher
-          After=network-online.target
-          Wants=network-online.target
-
-          [Service]
-          Type=simple
-          ExecStart={{ linux_install_dir }}/watch.sh
-          Restart=always
-          RestartSec=3
-
-          [Install]
-          WantedBy=multi-user.target
-      notify:
-        - Reload systemd
-        - Restart watcher service
-
-    - name: Ensure watcher service is enabled and running
-      ansible.builtin.systemd:
-        name: "{{ watch_service_name }}"
-        enabled: true
-        state: started
-
-  handlers:
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: true
-
-    - name: Restart watcher service
-      ansible.builtin.systemd:
-        name: "{{ watch_service_name }}"
-        state: restarted
+    - name: Copy auditing scripts
+      ansible.windows.win_copy:
+        src: "{{ playbook_dir }}/../Auditing Scripts/"
+        dest: "{{ windows_dir }}\Auditing Scripts\"
+    - name: Copy fixer scripts (do not execute)
+      ansible.windows.win_copy:
+        src: "{{ playbook_dir }}/../Fixer Scripts/"
+        dest: "{{ windows_dir }}\Fixer Scripts\"
