@@ -1,0 +1,34 @@
+What each file does
+File	Purpose
+f1sh_agent.conf	        Monitors SSH, sudo, user accounts, cron, systemd, and local executables
+f1sh_fim_rules.xml	        Raises alert severity for critical file modifications
+f1sh_web_agent.conf	        Monitors Apache configuration and web-root modifications
+
+How to deploy during IRSeC
+1. Back up the existing Wazuh configuration.
+2. Create an agent group called f1sh-linux and merge f1sh_agent.conf into its centralized configuration.
+3. Create an optional f1sh-web group for Apache servers.
+4. Place f1sh_fim_rules.xml in /var/ossec/etc/rules/ on the manager.
+
+5. Test the rules and restart the Wazuh manager.
+
+
+
+sudo /var/ossec/bin/wazuh-logtest
+sudo systemctl restart wazuh-manager
+
+
+1. Where each file goes
+Assuming you have a dedicated Wazuh manager and separate Linux machines you want to monitor:
+
+File	Location	Machine
+f1sh_fim_rules.xml	/var/ossec/etc/rules/	   Wazuh manager
+f1sh_agent.conf	/var/ossec/etc/shared/f1sh-linux/agent.conf	    Wazuh manager
+f1sh_web_agent.conf	/var/ossec/etc/shared/f1sh-web/agent.conf	    Wazuh manager
+
+
+
+Creating the agent_groups
+
+sudo /var/ossec/bin/agent_groups -a -g f1sh-linux
+sudo /var/ossec/bin/agent_groups -a -g f1sh-web

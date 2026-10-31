@@ -1,0 +1,69 @@
+What's included
+
+File	Function
+f1sh_linux_agent.conf	Monitors SSH, sudo, user accounts, cron jobs, systemd services, and executables
+
+f1sh_windows_agent.conf	Monitors Windows startup locations, scheduled task files, hosts file, Group Policy files, and registry persistence
+
+f1sh_fim_rules.xml	Four custom rules to prioritize critical Linux and Windows changes
+
+README.md	Full installation, verification, and troubleshooting instructions
+
+Step-by-step deployment on the Wazuh manager
+All of the following commands run on the Wazuh manager, except the optional endpoint testing.
+Step 1 — Check existing agents and groups
+sudo /var/ossec/bin/agent_control -l
+sudo /var/ossec/bin/agent_groups -l
+
+
+Identify which agent IDs belong to Linux and Windows machines.
+Step 2 — Create your F1.sh groups
+sudo /var/ossec/bin/agent_groups -a -g f1sh-linux
+sudo /var/ossec/bin/agent_groups -a -g f1sh-windows
+
+
+Skip creating a group if it already exists.
+Step 3 — Upload your files
+Extract the ZIP onto the manager and copy the files to these locations:
+Source file	Destination
+f1sh_linux_agent.conf	/var/ossec/etc/shared/f1sh-linux/agent.conf
+f1sh_windows_agent.conf	/var/ossec/etc/shared/f1sh-windows/agent.conf
+f1sh_fim_rules.xml	/var/ossec/etc/rules/f1sh_fim_rules.xml
+
+If the group configurations already exist, back them up and merge your settings rather than overwriting them.
+
+For new, empty group configurations, you can use:
+sudo cp f1sh_linux_agent.conf \
+  /var/ossec/etc/shared/f1sh-linux/agent.conf
+
+sudo cp f1sh_windows_agent.conf \
+  /var/ossec/etc/shared/f1sh-windows/agent.conf
+
+sudo cp f1sh_fim_rules.xml \
+  /var/ossec/etc/rules/f1sh_fim_rules.xml
+
+
+Step 4 — Assign existing agents
+Replace the example IDs with actual IDs from Step 1.
+# Example Linux agent
+sudo /var/ossec/bin/agent_groups -a -i 001 -g f1sh-linux
+
+# Example Windows agent
+sudo /var/ossec/bin/agent_groups -a -i 002 -g f1sh-windows
+
+
+Check agent_groups -h before running these commands. You want to preserve the existing group memberships, not accidentally replace the organizers' configurations.
+Step 5 — Restart the manager
+After checking that the rule IDs do not conflict with existing rules:
+sudo systemctl restart wazuh-manager
+sudo systemctl status wazuh-manager
+
+
+Check for configuration errors:
+sudo tail -n 80 /var/ossec/logs/ossec.log
+
+
+Step 6 — Verify detection
+In the Wazuh dashboard, open the File Integrity Monitoring section, select a connected agent, and inspect its events.
+
+The ZIP includes instructions for enabling a harmless test directory so you can verify file creation, modification, and deletion without touching critical system files.

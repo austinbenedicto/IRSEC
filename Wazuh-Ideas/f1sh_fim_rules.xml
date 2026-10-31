@@ -1,0 +1,28 @@
+<group name="f1sh_fim,">
+  <!-- Parent Wazuh syscheck group covers file added/modified/deleted alerts.
+       Validate against real events from your installed Wazuh version. -->
+  <rule id="100100" level="12">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">^/etc/(sudoers(?:\.d/.*)?|ssh/.*|passwd|shadow|gshadow)$</field>
+    <description>F1.sh Linux critical identity or SSH file change: $(syscheck.path)</description>
+    <group>f1sh_linux,critical_configuration,</group>
+  </rule>
+  <rule id="100101" level="10">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">^/etc/(cron\.(?:d|daily|hourly|weekly|monthly)/.*|systemd/system/.*)$</field>
+    <description>F1.sh Linux persistence location changed: $(syscheck.path)</description>
+    <group>f1sh_linux,persistence,</group>
+  </rule>
+  <rule id="100102" level="10">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">(?i)^c:\\(?:programdata\\microsoft\\windows\\start menu\\programs\\startup\\.*|windows\\system32\\tasks\\.*|windows\\system32\\drivers\\etc\\.*)$</field>
+    <description>F1.sh Windows critical file or persistence location changed: $(syscheck.path)</description>
+    <group>f1sh_windows,persistence,</group>
+  </rule>
+  <rule id="100103" level="10">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">(?i)^HKEY_LOCAL_MACHINE\\(?:Software\\Microsoft\\Windows\\CurrentVersion\\Run(?:Once)?|Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon|System\\CurrentControlSet\\Services)(?:\\.*)?$</field>
+    <description>F1.sh Windows registry persistence change: $(syscheck.path)</description>
+    <group>f1sh_windows,registry,persistence,</group>
+  </rule>
+</group>
