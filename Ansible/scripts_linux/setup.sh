@@ -1,56 +1,58 @@
 #!/usr/bin/env bash
+# F1.sh - interactive password-based Ansible deployment, run from Ansible/.
 set -Eeuo pipefail
-cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
-if [[ $(id -u) -eq 0 ]]; then echo 'Run as a normal user with sudo access, not root.' >&2; exit 1; fi
-for path in inventory.ini install-scripts.yml scripts_linux ../yara/rules '../Auditing Scripts' '../Fixer Scripts'; do
-  [[ -e "$path" ]] || { echo "Missing repo path: $path" >&2; exit 1; }
-done
-if ! command -v apt-get >/dev/null; then echo 'This bootstrap currently supports Debian/Ubuntu controllers only.' >&2; exit 1; fi
-printf 'This will install Ansible and dependencies ON THIS CONTROLLER, then copy tools to authorized hosts.\n'
-read -r -p 'Continue? [y/N] ' proceed
-[[ "$proceed" =~ ^[Yy]$ ]] || exit 0
-sudo apt-get update
-sudo apt-get install -y ansible rsync sshpass python3 python3-winrm
-ansible-galaxy collection install ansible.posix ansible.windows
-read -r -p 'Shared Linux SSH administrator username: ' linux_user
-read -r -p 'Shared Windows administrator username (e.g. .\Administrator): ' windows_user
-[[ -n "$linux_user" && -n "$windows_user" ]] || { echo 'Both usernames required.' >&2; exit 1; }
-read -r -s -p 'Shared password (not stored in Git): ' shared_password; printf '\n'
-[[ -n "$shared_password" ]] || { echo 'Password required.' >&2; exit 1; }
-# YAML supports JSON syntax; write values safely without shell interpolation.
-creds=$(mktemp /tmp/irsec-ansible-credentials.XXXXXX.json)
-chmod 600 "$creds"
-cleanup() { rm -f -- "$creds"; unset shared_password; }
+cd "$(dirname "${BASH_SOURCE[0]}")"
+export ANSIBLE_CONFIG="$PWD/ansible.cfg"
+umask 077
+secret_file=""
+cleanup() { unset F1SH_PASSWORD || true; [[ -z "$secret_file" ]] || rm -f "$secret_file"; }
 trap cleanup EXIT
-export IRSEC_LINUX_USER="$linux_user" IRSEC_WINDOWS_USER="$windows_user" IRSEC_PASSWORD="$shared_password"
-python3 - "$creds" <<'PYINNER'
-import json,os,sys
-with open(sys.argv[1], 'w') as f:
- json.dump({'linux_user':os.environ['IRSEC_LINUX_USER'], 'windows_user':os.environ['IRSEC_WINDOWS_USER'], 'shared_password':os.environ['IRSEC_PASSWORD']},f)
-PYINNER
-unset IRSEC_PASSWORD shared_password
-# Pass per-group usernames and passwords via inventory variables, loaded at runtime.
-# No password is written to the repo. Runtime file removed on exit.
-# Generate separate group vars in the temporary extra-vars file.
-python3 - "$creds" <<'PYINNER'
-import json,sys
-p=sys.argv[1]
-d=json.load(open(p))
-# Per-host credentials from group membership, without secrets in repository.
-# Ansible group vars can be selected using group_names in play context.
-d.update({'ansible_user': "{{ linux_user if 'linux' in group_names else windows_user }}",'ansible_password':'{{ shared_password }}'})
-with open(p,'w') as f: json.dump(d,f)
-PYINNER
-printf '\nChecking syntax...\n'
-ansible-playbook install-scripts.yml --syntax-check
-printf '\nChoose targets: 1) one Linux host (pitlane) 2) all Linux 3) all Windows 4) all supported (Linux + Windows)\n'
-read -r -p 'Choice [1]: ' choice
-case "${choice:-1}" in
-  1) limit='pitlane' ;;
-  2) limit='linux' ;;
-  3) limit='windows' ;;
-  4) limit='linux:windows' ;;
-  *) echo 'Invalid choice.' >&2; exit 1 ;;
+[[ -f inventory.ini && -f install-scripts.yml && -d scripts_linux && -d ../AuditingScripts ]] || {
+  echo 'ERROR: Expected complete IRSEC repository (Ansible and AuditingScripts folders).'; exit 1;
+}
+echo 'F1.sh - deployment-only controller setup'
+read -r -p 'Are you on an authorized controller during permitted activity? Type YES: ' approval
+[[ "$approval" == YES ]] || exit 1
+if ! command -v ansible-playbook >/dev/null || ! command -v sshpass >/dev/null || ! python3 -c 'import winrm' 2>/dev/null; then
+  read -r -p 'Install Ansible/SSH/WinRM controller dependencies with apt? (y/N): ' install
+  [[ "$install" == y ]] || { echo 'Install prerequisites first.'; exit 1; }
+  sudo apt-get update
+  sudo apt-get install -y ansible sshpass python3-winrm openssh-client
+fi
+if ! ansible-galaxy collection list ansible.windows 2>/dev/null | grep -q 'ansible.windows'; then
+  ansible-galaxy collection install ansible.windows
+fi
+read -r -p 'Linux SSH username: ' linux_user
+read -r -p 'Windows WinRM username (DOMAIN\\user if necessary): ' windows_user
+[[ -n "$linux_user" && -n "$windows_user" ]] || { echo 'Usernames required.'; exit 1; }
+read -r -s -p 'Shared default password: ' F1SH_PASSWORD; echo
+[[ -n "$F1SH_PASSWORD" ]] || { echo 'Password required.'; exit 1; }
+export F1SH_PASSWORD
+secret_file=$(mktemp "${TMPDIR:-/tmp}/f1sh-ansible-XXXXXXXX.json")
+python3 - "$secret_file" "$linux_user" "$windows_user" <<'PY'
+import json, os, sys
+path, linux, windows = sys.argv[1:]
+with open(path, 'w') as f:
+    json.dump({'ansible_password': os.environ['F1SH_PASSWORD'],
+               'f1sh_linux_user': linux, 'f1sh_windows_user': windows}, f)
+os.chmod(path, 0o600)
+PY
+printf '\nDeployment targets: 1=pitlane  2=Linux  3=Windows  4=All  5=One host\n'
+read -r -p 'Choose 1-5: ' choice
+case "$choice" in
+  1) limit=pitlane;; 2) limit=linux;; 3) limit=windows;; 4) limit='linux:windows';;
+  5) read -r -p 'Hostname from inventory: ' limit
+     case "$limit" in pitlane|garage|grandstand|scrutineering|pitwall|teamradio|safetycar|transporters|stewards) ;; *) echo 'Not an approved deployment host'; exit 1;; esac;;
+  *) echo 'Invalid choice'; exit 1;;
 esac
-printf 'Deploying to %s. Files will be COPIED, not executed.\n' "$limit"
-ansible-playbook install-scripts.yml --limit "$limit" --extra-vars "@$creds"
+echo 'Connection tests (review failures):'
+if [[ "$choice" == 2 || "$choice" == 4 || "$limit" =~ ^(pitlane|garage|grandstand|scrutineering)$ ]]; then
+  ansible linux -m raw -a hostname -e "@$secret_file" --limit "$limit" || true
+fi
+if [[ "$choice" == 3 || "$choice" == 4 || "$limit" =~ ^(pitwall|teamradio|safetycar|transporters|stewards)$ ]]; then
+  ansible windows -m ansible.windows.win_ping -e "@$secret_file" --limit "$limit" || true
+fi
+echo 'Files will be COPIED, not executed. Check failed connections above.'
+read -r -p "Type DEPLOY to continue to $limit: " confirm
+[[ "$confirm" == DEPLOY ]] || { echo 'Cancelled'; exit 0; }
+ansible-playbook install-scripts.yml -e "@$secret_file" --limit "$limit"
