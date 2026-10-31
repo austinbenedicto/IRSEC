@@ -30,9 +30,5 @@
         state: directory
     - name: Copy auditing scripts
       ansible.windows.win_copy:
-        src: "{{ playbook_dir }}/../Auditing Scripts/"
+        src: "{{ playbook_dir }}/../AuditingScripts/"
         dest: "{{ windows_dir }}\Auditing Scripts\"
-    - name: Copy fixer scripts (do not execute)
-      ansible.windows.win_copy:
-        src: "{{ playbook_dir }}/../Fixer Scripts/"
-        dest: "{{ windows_dir }}\Fixer Scripts\"
