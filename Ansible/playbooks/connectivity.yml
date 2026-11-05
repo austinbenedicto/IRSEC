@@ -1,0 +1,13 @@
+---
+- name: F1.sh - Linux Connectivity Test
+  hosts: linux
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Test Ansible connectivity
+      ansible.builtin.ping:
+
+    - name: Display successful connection
+      ansible.builtin.debug:
+        msg: "Successfully connected to {{ inventory_hostname }}"

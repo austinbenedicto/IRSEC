@@ -1,0 +1,87 @@
+---
+- name: F1.sh - Back up a specified Linux path to controller
+  hosts: linux
+  gather_facts: true
+  become: "{{ f1sh_become | default(false) | bool }}"
+  vars:
+    source_path: "{{ lookup('env', 'F1SH_SOURCE_PATH') }}"
+    service_label: "{{ lookup('env', 'F1SH_SERVICE') }}"
+    local_backup_dir: "{{ lookup('env', 'F1SH_BACKUP_DIR') }}"
+    timestamp: "{{ lookup('env', 'F1SH_TIMESTAMP') }}"
+    archive_name: "{{ inventory_hostname }}-{{ service_label }}-{{ timestamp }}.tar.gz"
+  tasks:
+    - name: Ensure requested source exists
+      ansible.builtin.stat:
+        path: "{{ source_path }}"
+      register: source_stat
+
+    - name: Stop if source is missing or is not a regular file/directory
+      ansible.builtin.assert:
+        that:
+          - source_stat.stat.exists
+          - source_stat.stat.isreg | default(false) or source_stat.stat.isdir | default(false)
+        fail_msg: "Requested path does not exist or is not a regular file/directory"
+
+    - name: Create private temporary directory on target
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: f1sh_backup
+      register: tmpdir
+
+    - name: Archive and retrieve backup
+      block:
+        - name: Archive source (preserves its relative path)
+          ansible.builtin.command:
+            argv:
+              - tar
+              - -czf
+              - "{{ tmpdir.path }}/{{ archive_name }}"
+              - -C
+              - /
+              - --
+              - "{{ source_path | regex_replace('^/', '') }}"
+          changed_when: true
+
+        - name: Allow SSH user to retrieve archive if sudo was used
+          ansible.builtin.file:
+            path: "{{ tmpdir.path }}"
+            mode: '0750'
+          when: ansible_become | bool
+
+        - name: Set archive owner to SSH login user when using sudo
+          ansible.builtin.file:
+            path: "{{ tmpdir.path }}/{{ archive_name }}"
+            owner: "{{ ansible_user | default(ansible_ssh_user) }}"
+            mode: '0600'
+          when: ansible_become | bool
+
+        - name: Set temp directory owner to SSH login user when using sudo
+          ansible.builtin.file:
+            path: "{{ tmpdir.path }}"
+            owner: "{{ ansible_user | default(ansible_ssh_user) }}"
+            mode: '0700'
+          when: ansible_become | bool
+
+        - name: Download archive to controller
+          ansible.builtin.fetch:
+            src: "{{ tmpdir.path }}/{{ archive_name }}"
+            dest: "{{ local_backup_dir }}/{{ archive_name }}"
+            flat: true
+          become: false
+
+        - name: Verify archive locally
+          ansible.builtin.command:
+            argv:
+              - tar
+              - -tzf
+              - "{{ local_backup_dir }}/{{ archive_name }}"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+
+      always:
+        - name: Remove temporary directory on target
+          ansible.builtin.file:
+            path: "{{ tmpdir.path }}"
+            state: absent
+          when: tmpdir.path is defined

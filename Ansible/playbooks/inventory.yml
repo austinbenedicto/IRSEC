@@ -1,0 +1,28 @@
+---
+- name: F1.sh - Linux System Inventory
+  hosts: linux
+  gather_facts: true
+  become: false
+
+  tasks:
+    - name: Display operating system
+      ansible.builtin.debug:
+        msg: "{{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+
+    - name: Display hostname
+      ansible.builtin.debug:
+        msg: "{{ ansible_facts['hostname'] }}"
+
+    - name: Display primary IPv4 address
+      ansible.builtin.debug:
+        msg: "{{ ansible_facts['default_ipv4']['address'] | default('Unavailable') }}"
+
+    - name: Get listening TCP and UDP ports
+      ansible.builtin.command:
+        cmd: ss -tulnp
+      register: open_ports
+      changed_when: false
+
+    - name: Display open ports
+      ansible.builtin.debug:
+        msg: "{{ open_ports.stdout_lines }}"
